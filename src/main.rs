@@ -8,7 +8,7 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 use chrono::NaiveDate;
-use markdown;
+use markdown::{CompileOptions, Options, to_html_with_options};
 use mime;
 use mime_guess;
 use serde::{Serialize, Deserialize};
@@ -312,7 +312,10 @@ fn render_markdown(site_path: &PathBuf, path: &PathBuf, posts: &HashMap<String, 
     let posts_list: Vec<&Post> = posts.into_iter().map(|(_k, p)| p).collect();
     context.insert("posts", &posts_list);
     let rendered_content = Tera::one_off(&document.content, &context, true).unwrap();
-    let html_content = &markdown::to_html(&rendered_content);
+    let options = &Options {compile: CompileOptions {allow_dangerous_html: true,
+						     ..CompileOptions::default()},
+			    ..Options::default()};
+    let html_content = &to_html_with_options(&rendered_content, &options).unwrap();
     context.insert("content", &html_content);
     return tera.render("page.html", &context).unwrap().as_bytes().to_vec();
 }

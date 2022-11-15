@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 chrono = { version = "0", features = ["serde"] }
-markdown = "0"
+markdown = "1.0.0-alpha.3"
 mime = "0"
 mime_guess = "2"
 serde = "1"
