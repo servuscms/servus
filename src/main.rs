@@ -309,7 +309,8 @@ fn render_markdown(site_path: &PathBuf, path: &PathBuf, posts: &HashMap<String, 
     let site_config: SiteConfig = toml::from_str(&site_config_content).unwrap();
     context.insert("site", &site_config.site);
     context.insert("page", &document.metadata);
-    let posts_list: Vec<&Post> = posts.into_iter().map(|(_k, p)| p).collect();
+    let mut posts_list: Vec<&Post> = posts.into_iter().map(|(_k, p)| p).collect();
+    posts_list.sort_by(|a, b| b.date.cmp(&a.date));
     context.insert("posts", &posts_list);
     let rendered_content = Tera::one_off(&document.content, &context, true).unwrap();
     let options = &Options {compile: CompileOptions {allow_dangerous_html: true,
