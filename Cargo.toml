@@ -1,14 +1,17 @@
 [package]
 name = "servus"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 
 [dependencies]
+async-std = { version = "1", features = ["attributes"] }
 chrono = { version = "0", features = ["serde"] }
+femme = "2"
+http-types = "2"
 markdown = "1.0.0-alpha.3"
-mime = "0"
-mime_guess = "2"
 serde = "1"
 tera = "1"
+tide = "0"
+tide-tera = "0"
 toml = "0"
 yaml-front-matter = "0"
