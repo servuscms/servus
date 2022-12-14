@@ -14,7 +14,7 @@ use tide::{Request, Response};
 use toml;
 use yaml_front_matter::{Document, YamlFrontMatter};
 
-const BIND_ADDR: &str = "127.0.0.1:8888";
+const BIND_ADDR: &str = "0.0.0.0:8888";
 
 #[derive(Deserialize)]
 struct SiteConfig {
