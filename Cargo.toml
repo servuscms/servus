@@ -1,6 +1,6 @@
 [package]
 name = "servus"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 
 [dependencies]
@@ -9,6 +9,7 @@ chrono = { version = "0", features = ["serde"] }
 femme = "2"
 http-types = "2"
 markdown = "1.0.0-alpha.3"
+regex = "1"
 serde = "1"
 tera = "1"
 tide = "0"
