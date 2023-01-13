@@ -11,12 +11,15 @@ use regex::Regex;
 use serde::{Serialize, Deserialize};
 use tera;
 use tide::{Request, Response};
+use tide_acme::{AcmeConfig, TideRustlsExt};
+use tide_acme::rustls_acme::caches::DirCache;
+use tide_rustls;
 use toml;
 use yaml_front_matter::{Document, YamlFrontMatter};
 
 mod default_site;
 
-const BIND_ADDR: &str = "0.0.0.0:8888";
+const BIND_ADDR: &str = "0.0.0.0:443";
 
 #[derive(Deserialize)]
 struct SiteConfig {
@@ -29,6 +32,7 @@ struct SiteConfig {
 struct Site {
     title: String,
     tagline: String,
+    contact_email: String,
     url: String,
 }
 
@@ -96,7 +100,9 @@ fn get_site_for_request(request: &Request<State>) -> &SiteState {
 async fn main() -> Result<(), std::io::Error> {
     femme::start();
 
-    let mut app = tide::with_state(State { sites: get_sites() });
+    let sites = get_sites();
+
+    let mut app = tide::with_state(State { sites: sites.clone() });
     app.with(tide::log::LogMiddleware::new());
 
     app.at("/posts/:slug").get(|request: Request<State>| async move {
@@ -153,7 +159,17 @@ async fn main() -> Result<(), std::io::Error> {
         Ok(response)
     });
 
-    app.listen(BIND_ADDR).await?;
+    let domains: Vec<String> = sites.keys().filter(|&x| x != "default").cloned().collect();
+    let mut acme_config = AcmeConfig::new(domains).cache(DirCache::new("./cache")).directory_lets_encrypt(true);
+    for (domain, site) in sites {
+	if domain != "default" {
+	    let mut contact: String = "mailto:".to_owned();
+	    contact.push_str(&site.site.contact_email);
+	    acme_config = acme_config.contact_push(contact);
+	}
+    }
+
+    app.listen(tide_rustls::TlsListener::build().addrs(BIND_ADDR).acme(acme_config)).await?;
 
     Ok(())
 }

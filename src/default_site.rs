@@ -9,6 +9,7 @@ const DEFAULT_CONFIG: &str = r#"
 title = "servus!"
 tagline = "a simple example"
 url = "https://servus.page/"
+contact_email = "servus@servus.page"
 "#;
 
 const DEFAULT_INDEX_PAGE: &str = r#"
