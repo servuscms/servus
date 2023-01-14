@@ -109,7 +109,9 @@ async fn main() -> Result<(), std::io::Error> {
         let slug = request.param("slug")?;
         let response = match site.posts.read().unwrap().get(&slug as &str) {
             Some(post) => {
-                let body = render_markdown(&site, &post.filename, "post.html");
+                let mut extra_context = tera::Context::new();
+                extra_context.insert("post", &post);
+                let body = render_markdown(&site, &post.filename, "post.html", Some(extra_context));
                 Response::builder(200).content_type(mime::HTML).body(body).build()
             },
             None => {
@@ -122,16 +124,19 @@ async fn main() -> Result<(), std::io::Error> {
         let site = &get_site_for_request(&request);
         let pages = site.pages.read().unwrap();
         let index = pages.get("index").unwrap();
-        let body = render_markdown(&site, &index.filename, "page.html");
+        let body = render_markdown(&site, &index.filename, "page.html", None);
         let response = Response::builder(200).content_type(mime::HTML).body(body).build();
         Ok(response)
     });
     app.at("/*path").get(|request: Request<State>| async move {
         let site = &get_site_for_request(&request);
-        let path = request.param("path")?;
+        let mut path = request.param("path")?;
+        if path.ends_with("/") {
+            path = path.strip_suffix("/").unwrap();
+        }
         let response = match site.pages.read().unwrap().get(&path as &str) {
             Some(page) => {
-                let body = render_markdown(&site, &page.filename, "page.html");
+                let body = render_markdown(&site, &page.filename, "page.html", None);
                 Response::builder(200).content_type(mime::HTML).body(body).build()
             },
             None => {
@@ -167,47 +172,47 @@ async fn main() -> Result<(), std::io::Error> {
     let args: Vec<_> = env::args().collect();
     if args.len() > 1 {
         let mode = args[1].as_str();
-	match mode {
-	    "dev" => {
-		port = 4884;
-		ssl = false;
-		dev_mode = true;
-	    },
-	    "live" => {
-		production_cert = true;
-	    }
-	    _ => {
-		panic!("Valid modes are 'dev' and 'live'.");
-	    }
-	}
+        match mode {
+            "dev" => {
+                port = 4884;
+                ssl = false;
+                dev_mode = true;
+            },
+            "live" => {
+                production_cert = true;
+            }
+            _ => {
+                panic!("Valid modes are 'dev' and 'live'.");
+            }
+        }
     }
 
     if dev_mode {
-	println!("Open http://localhost:{} in your browser!", port);
+        println!("Open http://localhost:{} in your browser!", port);
     } else {
-	println!("Running on port {} using SSL={}", port, ssl);
-	if !production_cert {
-	    println!("Using Let's Encrypt staging environment. Great for testing, but browsers will complain about the certificate.");
-	}
+        println!("Running on port {} using SSL={}", port, ssl);
+        if !production_cert {
+            println!("Using Let's Encrypt staging environment. Great for testing, but browsers will complain about the certificate.");
+        }
     }
 
     let bind_to = format!("{addr}:{port}");
 
     if ssl {
-	let domains: Vec<String> = sites.keys().filter(|&x| x != "default").cloned().collect();
-	let cache = DirCache::new("./cache");
-	let mut acme_config = AcmeConfig::new(domains).cache(cache).directory_lets_encrypt(production_cert);
-	for (domain, site) in sites {
-	    if domain != "default" {
-		let mut contact: String = "mailto:".to_owned();
-		contact.push_str(&site.site.contact_email);
-		acme_config = acme_config.contact_push(contact);
-	    }
-	}
+        let domains: Vec<String> = sites.keys().filter(|&x| x != "default").cloned().collect();
+        let cache = DirCache::new("./cache");
+        let mut acme_config = AcmeConfig::new(domains).cache(cache).directory_lets_encrypt(production_cert);
+        for (domain, site) in sites {
+            if domain != "default" {
+                let mut contact: String = "mailto:".to_owned();
+                contact.push_str(&site.site.contact_email);
+                acme_config = acme_config.contact_push(contact);
+            }
+        }
 
-	app.listen(tide_rustls::TlsListener::build().addrs(bind_to).acme(acme_config)).await?;
+        app.listen(tide_rustls::TlsListener::build().addrs(bind_to).acme(acme_config)).await?;
     } else {
-	app.listen(bind_to).await?;
+        app.listen(bind_to).await?;
     }
 
     Ok(())
@@ -365,7 +370,7 @@ fn get_pages(site_path: &PathBuf) -> HashMap<String, Page> {
     pages
 }
 
-fn render_markdown(site_state: &SiteState, path: &str, template: &str) -> Vec<u8> {
+fn render_markdown(site_state: &SiteState, path: &str, template: &str, extra_context: Option<tera::Context>) -> Vec<u8> {
     let md = fs::read_to_string(&PathBuf::from(path)).unwrap();
     let document: Document<PageMetadata> = YamlFrontMatter::parse::<PageMetadata>(&md).unwrap();
 
@@ -376,6 +381,10 @@ fn render_markdown(site_state: &SiteState, path: &str, template: &str) -> Vec<u8
     let mut posts_list: Vec<&Post> = posts.values().into_iter().collect();
     posts_list.sort_by(|a, b| b.date.cmp(&a.date));
     context.insert("posts", &posts_list);
+
+    if !extra_context.is_none() {
+        context.extend(extra_context.unwrap());
+    }
 
     let rendered_content = tera::Tera::one_off(&document.content, &context, true).unwrap();
     let options = &markdown::Options {compile: markdown::CompileOptions {allow_dangerous_html: true,
