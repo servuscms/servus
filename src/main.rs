@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    env,
     path::{Path, PathBuf},
     fs,
     sync::{Arc, RwLock},
@@ -18,8 +19,6 @@ use toml;
 use yaml_front_matter::{Document, YamlFrontMatter};
 
 mod default_site;
-
-const BIND_ADDR: &str = "0.0.0.0:443";
 
 #[derive(Deserialize)]
 struct SiteConfig {
@@ -159,17 +158,57 @@ async fn main() -> Result<(), std::io::Error> {
         Ok(response)
     });
 
-    let domains: Vec<String> = sites.keys().filter(|&x| x != "default").cloned().collect();
-    let mut acme_config = AcmeConfig::new(domains).cache(DirCache::new("./cache")).directory_lets_encrypt(true);
-    for (domain, site) in sites {
-	if domain != "default" {
-	    let mut contact: String = "mailto:".to_owned();
-	    contact.push_str(&site.site.contact_email);
-	    acme_config = acme_config.contact_push(contact);
+    let addr = "0.0.0.0";
+    let mut port = 443;
+    let mut ssl = true;
+    let mut dev_mode = false;
+    let mut production_cert = false; // default to staging
+
+    let args: Vec<_> = env::args().collect();
+    if args.len() > 1 {
+        let mode = args[1].as_str();
+	match mode {
+	    "dev" => {
+		port = 4884;
+		ssl = false;
+		dev_mode = true;
+	    },
+	    "live" => {
+		production_cert = true;
+	    }
+	    _ => {
+		panic!("Valid modes are 'dev' and 'live'.");
+	    }
 	}
     }
 
-    app.listen(tide_rustls::TlsListener::build().addrs(BIND_ADDR).acme(acme_config)).await?;
+    if dev_mode {
+	println!("Open http://localhost:{} in your browser!", port);
+    } else {
+	println!("Running on port {} using SSL={}", port, ssl);
+	if !production_cert {
+	    println!("Using Let's Encrypt staging environment. Great for testing, but browsers will complain about the certificate.");
+	}
+    }
+
+    let bind_to = format!("{addr}:{port}");
+
+    if ssl {
+	let domains: Vec<String> = sites.keys().filter(|&x| x != "default").cloned().collect();
+	let cache = DirCache::new("./cache");
+	let mut acme_config = AcmeConfig::new(domains).cache(cache).directory_lets_encrypt(production_cert);
+	for (domain, site) in sites {
+	    if domain != "default" {
+		let mut contact: String = "mailto:".to_owned();
+		contact.push_str(&site.site.contact_email);
+		acme_config = acme_config.contact_push(contact);
+	    }
+	}
+
+	app.listen(tide_rustls::TlsListener::build().addrs(bind_to).acme(acme_config)).await?;
+    } else {
+	app.listen(bind_to).await?;
+    }
 
     Ok(())
 }
