@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
     fs,
     sync::{Arc, RwLock},
+    str,
+    str::FromStr,
 };
 use chrono::NaiveDate;
 use http_types::mime;
@@ -16,25 +18,27 @@ use tide_acme::{AcmeConfig, TideRustlsExt};
 use tide_acme::rustls_acme::caches::DirCache;
 use tide_rustls;
 use toml;
-use yaml_front_matter::{Document, YamlFrontMatter};
+use walkdir::{DirEntry, WalkDir};
+use yaml_front_matter::YamlFrontMatter;
 
 mod default_site;
 
 #[derive(Deserialize)]
 struct SiteConfig {
-    site: Site,
+    site: SiteMetadata,
 }
 
 #[derive(Clone)]
 #[derive(Serialize)]
 #[derive(Deserialize)]
-struct Site {
+struct SiteMetadata {
     title: String,
     tagline: String,
     contact_email: String,
     url: String,
 }
 
+#[derive(Clone)]
 #[derive(Serialize)]
 #[derive(Deserialize)]
 struct PageMetadata {
@@ -42,28 +46,21 @@ struct PageMetadata {
     description: Option<String>,
 }
 
+#[derive(Clone)]
 #[derive(Serialize)]
-struct Page {
-    title: String,
-    path: String,
-    filename: String,
-}
-
-#[derive(Serialize)]
-struct Post {
-    title: String,
-    slug: String,
-    date: NaiveDate,
-    filename: String,
+struct Resource {
+    mime: String,
+    content: Vec<u8>,
+    meta: Option<PageMetadata>, // only used for posts and pages
+    text: Option<String>, // only used for posts and pages
+    slug: Option<String>, // only used for posts
+    date: Option<NaiveDate>, // only used for posts
 }
 
 #[derive(Clone)]
 struct SiteState {
-    path: PathBuf,
-    site: Site,
-    posts: Arc<RwLock<HashMap<String, Post>>>,
-    pages: Arc<RwLock<HashMap<String, Page>>>,
-    tera: tera::Tera,
+    site: SiteMetadata,
+    resources: Arc<RwLock<HashMap<String, Resource>>>,
 }
 
 #[derive(Clone)]
@@ -104,63 +101,37 @@ async fn main() -> Result<(), std::io::Error> {
     let mut app = tide::with_state(State { sites: sites.clone() });
     app.with(tide::log::LogMiddleware::new());
 
-    app.at("/posts/:slug").get(|request: Request<State>| async move {
-        let site = &get_site_for_request(&request);
-        let slug = request.param("slug")?;
-        let response = match site.posts.read().unwrap().get(&slug as &str) {
-            Some(post) => {
-                let mut extra_context = tera::Context::new();
-                extra_context.insert("post", &post);
-                let body = render_markdown(&site, &post.filename, "post.html", Some(extra_context));
-                Response::builder(200).content_type(mime::HTML).body(body).build()
-            },
-            None => {
-                Response::new(404)
-            }
-        };
-        Ok(response)
-    });
+    fn render(resource: &Resource) -> Response {
+        let mime = mime::Mime::from_str(resource.mime.as_str()).unwrap();
+
+        Response::builder(200).content_type(mime).body(&*resource.content).build()
+    }
+
     app.at("/").get(|request: Request<State>| async move {
         let site = &get_site_for_request(&request);
-        let pages = site.pages.read().unwrap();
-        let index = pages.get("index").unwrap();
-        let body = render_markdown(&site, &index.filename, "page.html", None);
-        let response = Response::builder(200).content_type(mime::HTML).body(body).build();
-        Ok(response)
+        match site.resources.read().unwrap().get("/index") {
+            Some(index) => {
+                return Ok(render(index));
+            },
+            None => {
+                return Ok(Response::new(404));
+            }
+        };
     });
-    app.at("/*path").get(|request: Request<State>| async move {
+    app.at("*path").get(|request: Request<State>| async move {
         let site = &get_site_for_request(&request);
         let mut path = request.param("path")?;
         if path.ends_with("/") {
             path = path.strip_suffix("/").unwrap();
         }
-        let response = match site.pages.read().unwrap().get(&path as &str) {
-            Some(page) => {
-                let body = render_markdown(&site, &page.filename, "page.html", None);
-                Response::builder(200).content_type(mime::HTML).body(body).build()
+        match site.resources.read().unwrap().get(&format!("/{}", &path)) {
+            Some(resource) => {
+                return Ok(render(resource));
             },
             None => {
-                let mut file_path = PathBuf::from(&site.path);
-                file_path.push(path);
-
-                let content = match fs::read(&file_path) {
-                    Ok(content) => content,
-                    _ => {
-                        return Ok(Response::new(404));
-                    }
-                };
-
-                let content_type = match mime::Mime::sniff(&content) {
-                    Ok(m) => m,
-                    _ => {
-                        mime::Mime::from_extension(&file_path.extension().unwrap().to_str().unwrap()).unwrap()
-                    }
-                };
-
-                Response::builder(200).content_type(content_type).body(content).build()
-            }
+                return Ok(Response::new(404));
+            },
         };
-        Ok(response)
     });
 
     let addr = "0.0.0.0";
@@ -236,7 +207,7 @@ fn get_sites() -> HashMap<String, SiteState> {
     for path in &paths {
         println!("Found site: {}", path.file_name().to_str().unwrap());
         let mut site_config_path = PathBuf::from(&path.path());
-        site_config_path.push("config.toml");
+        site_config_path.push(".servus/config.toml");
         let site_config_content = match fs::read_to_string(&site_config_path) {
             Ok(content) => content,
             _ => {
@@ -245,27 +216,24 @@ fn get_sites() -> HashMap<String, SiteState> {
             },
         };
 
-        let site_config: SiteConfig = toml::from_str(&site_config_content).unwrap();
-        let posts = get_posts(&path.path());
-        let pages = get_pages(&path.path());
-
-        let mut tera = tera::Tera::new(&format!("{}/templates/*.html", fs::canonicalize(path.path()).unwrap().display())).unwrap();
+        let mut tera = tera::Tera::new(&format!("{}/.servus/templates/*.html", fs::canonicalize(path.path()).unwrap().display())).unwrap();
         tera.autoescape_on(vec![]);
+
+        let site_config: SiteConfig = toml::from_str(&site_config_content).unwrap();
+
+        let resources = get_resources(&path.path(), &site_config.site, &tera);
 
         sites.insert(path.file_name().to_str().unwrap().to_string(),
                      SiteState {
-                         path: path.path(),
                          site: site_config.site,
-                         posts: Arc::new(RwLock::new(posts)),
-                         pages: Arc::new(RwLock::new(pages)),
-                         tera: tera,
+                         resources: Arc::new(RwLock::new(resources)),
                      });
     }
 
     sites
 }
 
-fn get_post(path: &PathBuf) -> Option<Post> {
+fn get_post(path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> Option<Resource> {
     let filename = path.file_name().unwrap().to_str().unwrap();
     if filename.len() < 11 {
         println!("Invalid filename: {}", filename);
@@ -281,117 +249,184 @@ fn get_post(path: &PathBuf) -> Option<Post> {
         }
     };
 
-    let content = match fs::read_to_string(&path.display().to_string()) {
-        Ok(content) => content,
-        _ => {
-            println!("Cannot read from: {}. Skipping!", path.display());
-            return None;
-        }
+    let content = fs::read_to_string(&path.display().to_string()).unwrap();
+
+    let (text, maybe_meta) = parse_meta(&content);
+    if maybe_meta.is_none() {
+        println!("Cannot parse metadata for {}. Skipping post!", path.display());
+        return None;
+    }
+
+    let meta = maybe_meta.unwrap();
+
+    let html_text = md_to_html(text);
+
+    let mut resource = Resource {
+        mime: format!("{}", mime::HTML),
+        content: vec![],
+        meta: Some(meta.clone()),
+        text: Some(html_text.clone()),
+        slug: Some(Path::new(&filename[11..]).file_stem().unwrap().to_str().unwrap().to_string()),
+        date: Some(date),
     };
 
-    let document = match YamlFrontMatter::parse::<PageMetadata>(&content) {
-        Ok(document) => document,
-        _ => {
-            println!("Invalid post: {}. Skipping!", path.display());
-            return None;
-        }
-    };
+    let mut extra_context = tera::Context::new();
+    extra_context.insert("post", &resource);
 
-    Some(
-        Post {
-            title: String::from(&document.metadata.title),
-            slug: Path::new(&filename[11..]).file_stem().unwrap().to_str().unwrap().to_string(),
-            date: date,
-            filename: Path::new(&path).display().to_string(),
-    })
+    resource.content = render_template("post.html", tera, html_text, &site, extra_context).as_bytes().to_vec();
+
+    Some(resource)
 }
 
-fn get_posts(site_path: &PathBuf) -> HashMap<String, Post> {
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry.file_name().to_str().map(|s| s.starts_with(".")).unwrap_or(false)
+}
+
+fn get_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> HashMap<String, Resource> {
+    let mut resources = HashMap::new();
+
+    let mut posts_path = PathBuf::from(site_path);
+    posts_path.push("posts/");
+
     let mut posts = HashMap::new();
-    let mut path = PathBuf::from(&site_path);
-    path.push("posts");
 
-    for p in fs::read_dir(&path).unwrap() {
-        match get_post(&p.unwrap().path()) {
-            Some(post) => {
-                posts.insert(post.slug.to_string(), post);
-            }
-            None => {
-                continue;
-            }
-        };
+    for entry in WalkDir::new(&posts_path) {
+        let path = entry.unwrap().into_path();
+        if !path.is_file() {
+            continue;
+        }
+        let maybe_post = get_post(&path, &site, &tera);
+        if maybe_post.is_none() {
+            continue;
+        }
+        let post = maybe_post.unwrap();
+        let resource_path = format!("/posts/{}", post.slug.as_ref().unwrap());
+        println!("Loaded post {}", resource_path);
+        posts.insert(resource_path, post);
     }
 
-    posts
-}
-
-fn get_page(path: &PathBuf) -> Option<Page> {
-    let filename = path.file_name().unwrap().to_str().unwrap();
-    let content = match fs::read_to_string(&path.display().to_string()) {
-        Ok(content) => content,
-        _ => {
-            println!("Cannot read from: {}. Skipping!", path.display());
-            return None;
-        }
-    };
-
-    let document = match YamlFrontMatter::parse::<PageMetadata>(&content) {
-        Ok(document) => document,
-        _ => {
-            println!("Invalid post: {}. Skipping!", path.display());
-            return None;
-        }
-    };
-
-    return Some(
-        Page {
-            title: String::from(&document.metadata.title),
-            path: Path::new(&filename).file_stem().unwrap().to_str().unwrap().to_string(),
-            filename: Path::new(&path).display().to_string(),
-    });
-}
-
-fn get_pages(site_path: &PathBuf) -> HashMap<String, Page> {
-    let mut pages = HashMap::new();
-    let mut path = PathBuf::from(&site_path);
-    path.push("pages");
-
-    for p in fs::read_dir(&path).unwrap() {
-        match get_page(&p.unwrap().path()) {
-            Some(page) => {
-                pages.insert(page.path.to_string(), page);
-            }
-            None => {
-                continue;
-            }
-        };
-    }
-
-    pages
-}
-
-fn render_markdown(site_state: &SiteState, path: &str, template: &str, extra_context: Option<tera::Context>) -> Vec<u8> {
-    let md = fs::read_to_string(&PathBuf::from(path)).unwrap();
-    let document: Document<PageMetadata> = YamlFrontMatter::parse::<PageMetadata>(&md).unwrap();
-
-    let mut context = tera::Context::new();
-    context.insert("site", &site_state.site);
-    context.insert("page", &document.metadata);
-    let posts = site_state.posts.read().unwrap();
-    let mut posts_list: Vec<&Post> = posts.values().into_iter().collect();
+    let mut extra_context_posts = tera::Context::new();
+    let mut posts_list: Vec<&Resource> = posts.values().into_iter().collect();
     posts_list.sort_by(|a, b| b.date.cmp(&a.date));
-    context.insert("posts", &posts_list);
+    extra_context_posts.insert("posts", &posts_list);
 
+    let walker = WalkDir::new(site_path).into_iter();
+    for entry in walker.filter_entry(|e| !is_hidden(e)) {
+        let path = entry.unwrap().into_path();
+
+        if !path.is_file() {
+            continue;
+        }
+
+        if path.display().to_string().starts_with(posts_path.display().to_string().as_str()) {
+            continue;
+        }
+
+        let site_prefix = site_path.display().to_string();
+        let path_str = path.display().to_string();
+
+        let mut resource_path = path_str.strip_prefix(site_prefix.as_str()).unwrap();
+        let mut resource;
+
+        match path.extension().unwrap().to_str().unwrap() {
+            "md" => {
+                let content = fs::read_to_string(&path).unwrap();
+                let (text, maybe_meta) = parse_meta(&content);
+                if maybe_meta.is_none() {
+                    println!("Cannot parse metadata for {}. Skipping page!", path.display());
+                    continue;
+                }
+                let meta = maybe_meta.unwrap();
+                resource = Resource {
+                    mime: format!("{}", mime::HTML),
+                    content: vec![],
+                    meta: Some(meta.clone()),
+                    text: None,
+                    slug: None,
+                    date: None,
+                };
+                let mut extra_context = tera::Context::new();
+                extra_context.insert("page", &resource);
+                extra_context.extend(extra_context_posts.clone());
+                let rendered_text = render(&text, &site, Some(extra_context.clone()));
+                let html_text = md_to_html(rendered_text);
+                resource.text = Some(html_text.clone());
+                resource.content = render_template("page.html", tera, html_text, &site, extra_context).as_bytes().to_vec();
+                resource_path = resource_path.strip_suffix(".md").unwrap();
+            }
+            "xml" => {
+                let content = fs::read_to_string(&path).unwrap();
+                resource = Resource {
+                    mime: format!("{}", mime::XML),
+                    content: render(&content, &site, Some(extra_context_posts.clone())).as_bytes().to_vec(),
+                    meta: None,
+                    text: None,
+                    slug: None,
+                    date: None,
+                };
+            }
+            _ => {
+                let content = fs::read(&path).unwrap();
+                let mime = match mime::Mime::sniff(&content) {
+                    Ok(m) => m,
+                    _ => {
+                        match mime::Mime::from_extension(&path.extension().unwrap().to_str().unwrap()) {
+                            Some(m) => m,
+                            _ => mime::PLAIN,
+                        }
+                    }
+                };
+                resource = Resource {
+                    mime: format!("{}", mime),
+                    content: content,
+                    meta: None,
+                    text: None,
+                    slug: None,
+                    date: None,
+                };
+            }
+        }
+
+        println!("Loaded resource {} {} bytes={}", resource_path, resource.mime, resource.content.len());
+        resources.insert(resource_path.to_string(), resource);
+    }
+
+    resources.extend(posts);
+    
+    resources
+}
+
+fn parse_meta(content: &String) -> (String, Option<PageMetadata>) {
+    if let Ok(document) = YamlFrontMatter::parse::<PageMetadata>(&content) {
+        return (document.content, Some(document.metadata));
+    } else {
+        return (content.to_string(), None);
+    }
+}
+
+fn md_to_html(md_content: String) -> String {
+    let options = &markdown::Options {compile: markdown::CompileOptions {allow_dangerous_html: true,
+                                                                         ..markdown::CompileOptions::default()},
+                                      ..markdown::Options::default()};
+
+    markdown::to_html_with_options(&md_content, &options).unwrap()
+}
+
+fn render(content: &String, site: &SiteMetadata, extra_context: Option<tera::Context>) -> String {
+    let mut context = tera::Context::new();
+    context.insert("site", &site);
     if !extra_context.is_none() {
         context.extend(extra_context.unwrap());
     }
 
-    let rendered_content = tera::Tera::one_off(&document.content, &context, true).unwrap();
-    let options = &markdown::Options {compile: markdown::CompileOptions {allow_dangerous_html: true,
-                                                                         ..markdown::CompileOptions::default()},
-                                      ..markdown::Options::default()};
-    let html_content = &markdown::to_html_with_options(&rendered_content, &options).unwrap();
-    context.insert("content", &html_content);
+    tera::Tera::one_off(&content, &context, true).unwrap()
+}
 
-    site_state.tera.render(template, &context).unwrap().as_bytes().to_vec()
+fn render_template(template: &str, tera: &tera::Tera, content: String, site: &SiteMetadata, extra_context: tera::Context) -> String {
+    let mut context = tera::Context::new();
+    context.insert("site", &site);
+    context.insert("content", &content);
+    context.extend(extra_context);
+
+    return tera.render(template, &context).unwrap();
 }
