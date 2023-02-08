@@ -15,8 +15,8 @@ contact_email = "servus@servus.page"
 const DEFAULT_ATOM_XML: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
 <feed xmlns="http://www.w3.org/2005/Atom">
     <title>{{ site.title }}</title>
-    <link href="{{ site.url }}/atom.xml" rel="self" />
-    <link href="{{ site.url }}/" />
+    <link href="{{ site.url | safe }}/atom.xml" rel="self" />
+    <link href="{{ site.url | safe }}/" />
     <id>{{ site.url | safe }}</id>
 
     {% for post in posts %}
@@ -25,7 +25,11 @@ const DEFAULT_ATOM_XML: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
         <link href="{{ site.url | safe }}/{{ post.slug }}" />
         <updated>{{ post.date | date }}</updated>
         <id>{{ site.url | safe }}/{{ post.slug }}</id>
-        <content type="html">{{ post.text | safe }}</content>
+        <content type="xhtml">
+            <div xmlns="http://www.w3.org/1999/xhtml">
+                {{ post.text | safe }}
+            </div>
+        </content>
     </entry>
     {% endfor %}
 </feed>
