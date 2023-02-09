@@ -78,8 +78,8 @@ const DEFAULT_POST_TEMPLATE: &str = r#"
 {% extends "base.html" %}
 {% block content %}
     <div class="post">
-        <span class="date">{{ post.date | date(format="%d %B %Y") }}</span>
-        <h1>{{ post.meta.title }}</h1>
+        <span class="date">{{ page.date | date(format="%d %B %Y") }}</span>
+        <h1>{{ page.meta.title }}</h1>
         {{ content }}
     </div>
 {% endblock %}
@@ -90,6 +90,21 @@ const DEFAULT_BASE_TEMPLATE: &str = r#"
 <html lang="en-us">
     <head>
         <meta http-equiv="content-type" content="text/html; charset=utf-8">
+        <meta name="generator" content="Servus v{{ servus.version }}" />
+        <meta property="og:site_name" content="{{ site.title }}" />
+        <link rel="canonical" href="{{ page.url }}" />
+        <meta property="og:url" content="{{ page.url }}" />
+        {% if page and page.meta.title %}
+            <title>{{ page.meta.title }} | {{ site.title }}</title>
+            <meta property="og:title" content="{{ page.meta.title }}" />
+            <meta name="description" content="{{ page.meta.description }}" />
+            <meta property="og:description" content="{{ page.meta.description }}" />
+        {% else %}
+            <title>{{ site.title }} | {{ site.tagline }}</title>
+            <meta property="og:title" content="{{ site.title }}" />
+            <meta name="description" content="{{ site.tagline }}" />
+            <meta property="og:description" content="{{ site.tagline }}" />
+        {% endif %}
     </head>
     <body>
         <div>
