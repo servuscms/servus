@@ -17,11 +17,19 @@ use tide::{Request, Response};
 use tide_acme::{AcmeConfig, TideRustlsExt};
 use tide_acme::rustls_acme::caches::DirCache;
 use tide_rustls;
+use tl;
 use toml;
 use walkdir::{DirEntry, WalkDir};
 use yaml_front_matter::YamlFrontMatter;
 
 mod default_site;
+
+#[derive(Clone)]
+#[derive(Serialize)]
+#[derive(Deserialize)]
+struct ServusMetadata {
+    version: String,
+}
 
 #[derive(Deserialize)]
 struct SiteConfig {
@@ -49,6 +57,7 @@ struct PageMetadata {
 #[derive(Clone)]
 #[derive(Serialize)]
 struct Resource {
+    url: String,
     mime: String,
     content: Vec<u8>,
     meta: Option<PageMetadata>, // only used for posts and pages
@@ -257,21 +266,33 @@ fn get_post(path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> Option<Re
         return None;
     }
 
-    let meta = maybe_meta.unwrap();
-
+    let mut meta = maybe_meta.unwrap();
     let html_text = md_to_html(text);
+    let slug = Path::new(&filename[11..]).file_stem().unwrap().to_str().unwrap().to_string();
+
+    if meta.description.is_none() {
+        let dom = tl::parse(&html_text, tl::ParserOptions::default()).unwrap();
+        let parser = dom.parser();
+        match dom.query_selector("p").unwrap().next() {
+            Some(p) => {
+                meta.description = Some(p.get(&parser).unwrap().inner_text(&parser).to_string());
+            }
+            _ => {}
+        }
+    }
 
     let mut resource = Resource {
+        url: format!("{}/posts/{}", site.url, &slug),
         mime: format!("{}", mime::HTML),
         content: vec![],
         meta: Some(meta.clone()),
         text: Some(html_text.clone()),
-        slug: Some(Path::new(&filename[11..]).file_stem().unwrap().to_str().unwrap().to_string()),
+        slug: Some(slug.clone()),
         date: Some(date),
     };
 
     let mut extra_context = tera::Context::new();
-    extra_context.insert("post", &resource);
+    extra_context.insert("page", &resource);
 
     resource.content = render_template("post.html", tera, html_text, &site, extra_context).as_bytes().to_vec();
 
@@ -336,8 +357,10 @@ fn get_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) ->
                     println!("Cannot parse metadata for {}. Skipping page!", path.display());
                     continue;
                 }
+                resource_path = resource_path.strip_suffix(".md").unwrap();
                 let meta = maybe_meta.unwrap();
                 resource = Resource {
+                    url: format!("{}{}", site.url, resource_path),
                     mime: format!("{}", mime::HTML),
                     content: vec![],
                     meta: Some(meta.clone()),
@@ -352,11 +375,11 @@ fn get_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) ->
                 let html_text = md_to_html(rendered_text);
                 resource.text = Some(html_text.clone());
                 resource.content = render_template("page.html", tera, html_text, &site, extra_context).as_bytes().to_vec();
-                resource_path = resource_path.strip_suffix(".md").unwrap();
             }
             "xml" => {
                 let content = fs::read_to_string(&path).unwrap();
                 resource = Resource {
+                    url: format!("{}{}", site.url, resource_path),
                     mime: format!("{}", mime::XML),
                     content: render(&content, &site, Some(extra_context_posts.clone())).as_bytes().to_vec(),
                     meta: None,
@@ -377,6 +400,7 @@ fn get_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) ->
                     }
                 };
                 resource = Resource {
+                    url: format!("{}{}", site.url, resource_path),
                     mime: format!("{}", mime),
                     content: content,
                     meta: None,
@@ -415,6 +439,7 @@ fn md_to_html(md_content: String) -> String {
 fn render(content: &String, site: &SiteMetadata, extra_context: Option<tera::Context>) -> String {
     let mut context = tera::Context::new();
     context.insert("site", &site);
+    context.insert("servus", &ServusMetadata { version: env!("CARGO_PKG_VERSION").to_string() });
     if !extra_context.is_none() {
         context.extend(extra_context.unwrap());
     }
@@ -425,6 +450,7 @@ fn render(content: &String, site: &SiteMetadata, extra_context: Option<tera::Con
 fn render_template(template: &str, tera: &tera::Tera, content: String, site: &SiteMetadata, extra_context: tera::Context) -> String {
     let mut context = tera::Context::new();
     context.insert("site", &site);
+    context.insert("servus", &ServusMetadata { version: env!("CARGO_PKG_VERSION").to_string() });
     context.insert("content", &content);
     context.extend(extra_context);
 
