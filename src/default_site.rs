@@ -12,6 +12,29 @@ url = "https://servus.page"
 contact_email = "servus@servus.page"
 "#;
 
+const DEFAULT_ROBOTS_TXT: &str = r#"User-agent: *
+Sitemap: {{ site.url | safe}}/sitemap.xml
+"#;
+
+const DEFAULT_SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd" xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    {% for post in posts %}
+        <url>
+            <loc>{{ post.url | safe }}</loc>
+        </url>
+    {% endfor %}
+    {% for page in pages %}
+        {% set url = page.url | trim_end_matches(pat="/index") %}
+        {% if url == site.url and not url is ending_with("/") %}
+            {% set url = url ~ "/" %}
+        {% endif %}
+        <url>
+            <loc>{{ url | safe }}</loc>
+        </url>
+    {% endfor %}
+</urlset>
+"#;
+
 const DEFAULT_ATOM_XML: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
 <feed xmlns="http://www.w3.org/2005/Atom">
     <title>{{ site.title }}</title>
@@ -128,6 +151,8 @@ pub fn generate(site_path: &str) {
     fs::create_dir_all(get_path(site_path, "posts")).unwrap();
 
     write!(fs::File::create(get_path(site_path, ".servus/config.toml")).unwrap(), "{}", DEFAULT_CONFIG).unwrap();
+    write!(fs::File::create(get_path(site_path, "robots.txt")).unwrap(), "{}", DEFAULT_ROBOTS_TXT).unwrap();
+    write!(fs::File::create(get_path(site_path, "sitemap.xml")).unwrap(), "{}", DEFAULT_SITEMAP_XML).unwrap();
     write!(fs::File::create(get_path(site_path, "atom.xml")).unwrap(), "{}", DEFAULT_ATOM_XML).unwrap();
     write!(fs::File::create(get_path(site_path, "index.md")).unwrap(), "{}", DEFAULT_INDEX_PAGE).unwrap();
     write!(fs::File::create(get_path(site_path, "posts.md")).unwrap(), "{}", DEFAULT_POSTS_PAGE).unwrap();

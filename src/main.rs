@@ -230,7 +230,7 @@ fn get_sites() -> HashMap<String, SiteState> {
 
         let site_config: SiteConfig = toml::from_str(&site_config_content).unwrap();
 
-        let resources = get_resources(&path.path(), &site_config.site, &tera);
+        let resources = load_resources(&path.path(), &site_config.site, &tera);
 
         sites.insert(path.file_name().to_str().unwrap().to_string(),
                      SiteState {
@@ -303,13 +303,11 @@ fn is_hidden(entry: &DirEntry) -> bool {
     entry.file_name().to_str().map(|s| s.starts_with(".")).unwrap_or(false)
 }
 
-fn get_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> HashMap<String, Resource> {
-    let mut resources = HashMap::new();
+fn load_posts(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> HashMap<String, Resource> {
+    let mut posts = HashMap::new();
 
     let mut posts_path = PathBuf::from(site_path);
     posts_path.push("posts/");
-
-    let mut posts = HashMap::new();
 
     for entry in WalkDir::new(&posts_path) {
         let path = entry.unwrap().into_path();
@@ -322,20 +320,25 @@ fn get_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) ->
         }
         let post = maybe_post.unwrap();
         let resource_path = format!("/posts/{}", post.slug.as_ref().unwrap());
+
         println!("Loaded post {}", resource_path);
         posts.insert(resource_path, post);
     }
 
-    let mut extra_context_posts = tera::Context::new();
-    let mut posts_list: Vec<&Resource> = posts.values().into_iter().collect();
-    posts_list.sort_by(|a, b| b.date.cmp(&a.date));
-    extra_context_posts.insert("posts", &posts_list);
+    posts
+}
 
-    let walker = WalkDir::new(site_path).into_iter();
-    for entry in walker.filter_entry(|e| !is_hidden(e)) {
+fn load_pages(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera, posts: &Vec<&Resource>) -> HashMap<String, Resource> {
+    let mut pages = HashMap::new();
+
+    let mut posts_path = PathBuf::from(site_path);
+    posts_path.push("posts/");
+
+    let page_walker = WalkDir::new(site_path).into_iter();
+    for entry in page_walker.filter_entry(|e| !is_hidden(e)) {
         let path = entry.unwrap().into_path();
 
-        if !path.is_file() {
+        if !path.is_file() || path.extension().unwrap().to_str().unwrap() != "md" {
             continue;
         }
 
@@ -346,42 +349,72 @@ fn get_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) ->
         let site_prefix = site_path.display().to_string();
         let path_str = path.display().to_string();
 
-        let mut resource_path = path_str.strip_prefix(site_prefix.as_str()).unwrap();
+        let resource_path = path_str.strip_prefix(site_prefix.as_str()).unwrap().strip_suffix(".md").unwrap();
         let mut resource;
 
-        match path.extension().unwrap().to_str().unwrap() {
-            "md" => {
+        let content = fs::read_to_string(&path).unwrap();
+        let (text, maybe_meta) = parse_meta(&content);
+        if maybe_meta.is_none() {
+            println!("Cannot parse metadata for {}. Skipping page!", path.display());
+            continue;
+        }
+
+        let meta = maybe_meta.unwrap();
+        resource = Resource {
+            url: format!("{}{}", site.url, resource_path),
+            mime: format!("{}", mime::HTML),
+            content: vec![],
+            meta: Some(meta.clone()),
+            text: None,
+            slug: None,
+            date: None,
+        };
+
+        let mut extra_context = tera::Context::new();
+        extra_context.insert("page", &resource);
+        extra_context.insert("posts", &posts);
+
+        let rendered_text = render(&text, &site, Some(extra_context.clone()));
+        let html_text = md_to_html(rendered_text);
+        resource.text = Some(html_text.clone());
+        resource.content = render_template("page.html", tera, html_text, &site, extra_context).as_bytes().to_vec();
+
+        println!("Loaded page {} ", resource_path);
+        pages.insert(resource_path.to_string(), resource);
+    }
+
+    pages
+}
+
+fn load_extra_resources(site_path: &PathBuf, site: &SiteMetadata, posts: &Vec<&Resource>, pages: &Vec<&Resource>) -> HashMap<String, Resource> {
+    let mut resources = HashMap::new();
+
+    let walker = WalkDir::new(site_path).into_iter();
+    for entry in walker.filter_entry(|e| !is_hidden(e)) {
+        let path = entry.unwrap().into_path();
+
+        if !path.is_file() || path.extension().unwrap().to_str().unwrap() == "md" {
+            continue;
+        }
+
+        let site_prefix = site_path.display().to_string();
+        let path_str = path.display().to_string();
+
+        let resource_path = path_str.strip_prefix(site_prefix.as_str()).unwrap();
+        let resource;
+
+        let extension = path.extension().unwrap().to_str().unwrap();
+        match extension {
+            "xml" | "txt" => {
                 let content = fs::read_to_string(&path).unwrap();
-                let (text, maybe_meta) = parse_meta(&content);
-                if maybe_meta.is_none() {
-                    println!("Cannot parse metadata for {}. Skipping page!", path.display());
-                    continue;
-                }
-                resource_path = resource_path.strip_suffix(".md").unwrap();
-                let meta = maybe_meta.unwrap();
-                resource = Resource {
-                    url: format!("{}{}", site.url, resource_path),
-                    mime: format!("{}", mime::HTML),
-                    content: vec![],
-                    meta: Some(meta.clone()),
-                    text: None,
-                    slug: None,
-                    date: None,
-                };
                 let mut extra_context = tera::Context::new();
-                extra_context.insert("page", &resource);
-                extra_context.extend(extra_context_posts.clone());
-                let rendered_text = render(&text, &site, Some(extra_context.clone()));
-                let html_text = md_to_html(rendered_text);
-                resource.text = Some(html_text.clone());
-                resource.content = render_template("page.html", tera, html_text, &site, extra_context).as_bytes().to_vec();
-            }
-            "xml" => {
-                let content = fs::read_to_string(&path).unwrap();
+                extra_context.insert("posts", &posts);
+                extra_context.insert("pages", &pages);
+
                 resource = Resource {
                     url: format!("{}{}", site.url, resource_path),
-                    mime: format!("{}", mime::XML),
-                    content: render(&content, &site, Some(extra_context_posts.clone())).as_bytes().to_vec(),
+                    mime: format!("{}", if extension == "xml" { mime::XML } else { mime::PLAIN }),
+                    content: render(&content, &site, Some(extra_context)).as_bytes().to_vec(),
                     meta: None,
                     text: None,
                     slug: None,
@@ -393,7 +426,7 @@ fn get_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) ->
                 let mime = match mime::Mime::sniff(&content) {
                     Ok(m) => m,
                     _ => {
-                        match mime::Mime::from_extension(&path.extension().unwrap().to_str().unwrap()) {
+                        match mime::Mime::from_extension(&extension) {
                             Some(m) => m,
                             _ => mime::PLAIN,
                         }
@@ -415,8 +448,26 @@ fn get_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) ->
         resources.insert(resource_path.to_string(), resource);
     }
 
+    resources
+}
+
+fn load_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> HashMap<String, Resource> {
+    let posts = load_posts(&site_path, &site, &tera);
+
+    let mut posts_list: Vec<&Resource> = posts.values().into_iter().collect();
+    posts_list.sort_by(|a, b| b.date.cmp(&a.date));
+
+    let pages = load_pages(&site_path, &site, &tera, &posts_list);
+
+    let pages_list: Vec<&Resource> = pages.values().into_iter().collect();
+
+    let extra_resources = load_extra_resources(&site_path, &site, &posts_list, &pages_list);
+
+    let mut resources = HashMap::new();
     resources.extend(posts);
-    
+    resources.extend(pages);
+    resources.extend(extra_resources);
+
     resources
 }
 
