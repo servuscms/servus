@@ -300,7 +300,7 @@ fn get_post(path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> Option<Re
 }
 
 fn is_hidden(entry: &DirEntry) -> bool {
-    entry.file_name().to_str().map(|s| s.starts_with(".")).unwrap_or(false)
+    entry.file_name().to_str().map(|s| s.starts_with(".") && !(s == ".well-known")).unwrap_or(false)
 }
 
 fn load_posts(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> HashMap<String, Resource> {
