@@ -113,7 +113,7 @@ async fn main() -> Result<(), std::io::Error> {
     fn render(resource: &Resource) -> Response {
         let mime = mime::Mime::from_str(resource.mime.as_str()).unwrap();
 
-        Response::builder(200).content_type(mime).body(&*resource.content).build()
+        Response::builder(200).content_type(mime).header("Access-Control-Allow-Origin", "*").body(&*resource.content).build()
     }
 
     app.at("/").get(|request: Request<State>| async move {
