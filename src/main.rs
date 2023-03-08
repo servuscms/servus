@@ -12,6 +12,7 @@ use http_types::mime;
 use markdown;
 use regex::Regex;
 use serde::{Serialize, Deserialize};
+use serde_yaml;
 use tera;
 use tide::{Request, Response};
 use tide_acme::{AcmeConfig, TideRustlsExt};
@@ -31,27 +32,13 @@ struct ServusMetadata {
     version: String,
 }
 
-#[derive(Deserialize)]
-struct SiteConfig {
-    site: SiteMetadata,
-}
-
-#[derive(Clone)]
-#[derive(Serialize)]
-#[derive(Deserialize)]
-struct SiteMetadata {
-    title: String,
-    tagline: String,
-    contact_email: String,
-    url: String,
-}
-
 #[derive(Clone)]
 #[derive(Serialize)]
 #[derive(Deserialize)]
 struct PageMetadata {
     title: String,
     description: Option<String>,
+    lang: Option<String>,
 }
 
 #[derive(Clone)]
@@ -68,7 +55,7 @@ struct Resource {
 
 #[derive(Clone)]
 struct SiteState {
-    site: SiteMetadata,
+    site: toml::Value,
     resources: Arc<RwLock<HashMap<String, Resource>>>,
 }
 
@@ -185,7 +172,7 @@ async fn main() -> Result<(), std::io::Error> {
         for (domain, site) in sites {
             if domain != "default" {
                 let mut contact: String = "mailto:".to_owned();
-                contact.push_str(&site.site.contact_email);
+                contact.push_str(site.site.get("contact_email").unwrap().as_str().unwrap());
                 acme_config = acme_config.contact_push(contact);
             }
         }
@@ -215,9 +202,7 @@ fn get_sites() -> HashMap<String, SiteState> {
     let mut sites = HashMap::new();
     for path in &paths {
         println!("Found site: {}", path.file_name().to_str().unwrap());
-        let mut site_config_path = PathBuf::from(&path.path());
-        site_config_path.push(".servus/config.toml");
-        let site_config_content = match fs::read_to_string(&site_config_path) {
+        let site_config_content = match fs::read_to_string(&format!("{}/.servus/config.toml", path.path().display())) {
             Ok(content) => content,
             _ => {
                 println!("No site config for site: {}. Skipping!", path.file_name().to_str().unwrap());
@@ -228,13 +213,27 @@ fn get_sites() -> HashMap<String, SiteState> {
         let mut tera = tera::Tera::new(&format!("{}/.servus/templates/*.html", fs::canonicalize(path.path()).unwrap().display())).unwrap();
         tera.autoescape_on(vec![]);
 
-        let site_config: SiteConfig = toml::from_str(&site_config_content).unwrap();
+        let site_config: HashMap<String, toml::Value> = toml::from_str(&site_config_content).unwrap();
 
-        let resources = load_resources(&path.path(), &site_config.site, &tera);
+        let mut site_data: HashMap<String, serde_yaml::Value> = HashMap::new();
+
+        let site_data_paths = match fs::read_dir(format!("{}/data", path.path().display())) {
+            Ok(paths) => paths.map(|r| r.unwrap()).collect(),
+            _ => vec![],
+        };
+        for data_path in &site_data_paths {
+            let data_name = data_path.path().file_stem().unwrap().to_str().unwrap().to_string();
+            println!("Loading data: {}", &data_name);
+            let f = std::fs::File::open(data_path.path()).unwrap();
+            let data: serde_yaml::Value = serde_yaml::from_reader(f).unwrap();
+            site_data.insert(data_name, data);
+        }
+
+        let resources = load_resources(&path.path(), &site_config.get("site").unwrap(), &site_data, &tera);
 
         sites.insert(path.file_name().to_str().unwrap().to_string(),
                      SiteState {
-                         site: site_config.site,
+                         site: site_config.get("site").unwrap().clone(),
                          resources: Arc::new(RwLock::new(resources)),
                      });
     }
@@ -242,7 +241,7 @@ fn get_sites() -> HashMap<String, SiteState> {
     sites
 }
 
-fn get_post(path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> Option<Resource> {
+fn get_post(path: &PathBuf, site: &toml::Value, site_data: &HashMap<String, serde_yaml::Value>, tera: &tera::Tera) -> Option<Resource> {
     let filename = path.file_name().unwrap().to_str().unwrap();
     if filename.len() < 11 {
         println!("Invalid filename: {}", filename);
@@ -282,7 +281,7 @@ fn get_post(path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> Option<Re
     }
 
     let mut resource = Resource {
-        url: format!("{}/posts/{}", site.url, &slug),
+        url: format!("{}/posts/{}", site.get("url").unwrap(), &slug),
         mime: format!("{}", mime::HTML),
         content: vec![],
         meta: Some(meta.clone()),
@@ -293,6 +292,7 @@ fn get_post(path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> Option<Re
 
     let mut extra_context = tera::Context::new();
     extra_context.insert("page", &resource);
+    extra_context.insert("data", &site_data);
 
     resource.content = render_template("post.html", tera, html_text, &site, extra_context).as_bytes().to_vec();
 
@@ -303,7 +303,7 @@ fn is_hidden(entry: &DirEntry) -> bool {
     entry.file_name().to_str().map(|s| s.starts_with(".") && !(s == ".well-known")).unwrap_or(false)
 }
 
-fn load_posts(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> HashMap<String, Resource> {
+fn load_posts(site_path: &PathBuf, site: &toml::Value, site_data: &HashMap<String, serde_yaml::Value>, tera: &tera::Tera) -> HashMap<String, Resource> {
     let mut posts = HashMap::new();
 
     let mut posts_path = PathBuf::from(site_path);
@@ -314,7 +314,7 @@ fn load_posts(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> Ha
         if !path.is_file() {
             continue;
         }
-        let maybe_post = get_post(&path, &site, &tera);
+        let maybe_post = get_post(&path, &site, &site_data, &tera);
         if maybe_post.is_none() {
             continue;
         }
@@ -328,7 +328,7 @@ fn load_posts(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> Ha
     posts
 }
 
-fn load_pages(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera, posts: &Vec<&Resource>) -> HashMap<String, Resource> {
+fn load_pages(site_path: &PathBuf, site: &toml::Value, tera: &tera::Tera, posts: &Vec<&Resource>) -> HashMap<String, Resource> {
     let mut pages = HashMap::new();
 
     let mut posts_path = PathBuf::from(site_path);
@@ -361,7 +361,7 @@ fn load_pages(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera, posts
 
         let meta = maybe_meta.unwrap();
         resource = Resource {
-            url: format!("{}{}", site.url, resource_path),
+            url: format!("{}{}", site.get("url").unwrap(), resource_path),
             mime: format!("{}", mime::HTML),
             content: vec![],
             meta: Some(meta.clone()),
@@ -386,7 +386,7 @@ fn load_pages(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera, posts
     pages
 }
 
-fn load_extra_resources(site_path: &PathBuf, site: &SiteMetadata, posts: &Vec<&Resource>, pages: &Vec<&Resource>) -> HashMap<String, Resource> {
+fn load_extra_resources(site_path: &PathBuf, site: &toml::Value, posts: &Vec<&Resource>, pages: &Vec<&Resource>) -> HashMap<String, Resource> {
     let mut resources = HashMap::new();
 
     let walker = WalkDir::new(site_path).into_iter();
@@ -412,7 +412,7 @@ fn load_extra_resources(site_path: &PathBuf, site: &SiteMetadata, posts: &Vec<&R
                 extra_context.insert("pages", &pages);
 
                 resource = Resource {
-                    url: format!("{}{}", site.url, resource_path),
+                    url: format!("{}{}", site.get("url").unwrap(), resource_path),
                     mime: format!("{}", if extension == "xml" { mime::XML } else { mime::PLAIN }),
                     content: render(&content, &site, Some(extra_context)).as_bytes().to_vec(),
                     meta: None,
@@ -433,7 +433,7 @@ fn load_extra_resources(site_path: &PathBuf, site: &SiteMetadata, posts: &Vec<&R
                     }
                 };
                 resource = Resource {
-                    url: format!("{}{}", site.url, resource_path),
+                    url: format!("{}{}", site.get("url").unwrap(), resource_path),
                     mime: format!("{}", mime),
                     content: content,
                     meta: None,
@@ -451,8 +451,8 @@ fn load_extra_resources(site_path: &PathBuf, site: &SiteMetadata, posts: &Vec<&R
     resources
 }
 
-fn load_resources(site_path: &PathBuf, site: &SiteMetadata, tera: &tera::Tera) -> HashMap<String, Resource> {
-    let posts = load_posts(&site_path, &site, &tera);
+fn load_resources(site_path: &PathBuf, site: &toml::Value, site_data: &HashMap<String, serde_yaml::Value>, tera: &tera::Tera) -> HashMap<String, Resource> {
+    let posts = load_posts(&site_path, &site, &site_data, &tera);
 
     let mut posts_list: Vec<&Resource> = posts.values().into_iter().collect();
     posts_list.sort_by(|a, b| b.date.cmp(&a.date));
@@ -487,7 +487,7 @@ fn md_to_html(md_content: String) -> String {
     markdown::to_html_with_options(&md_content, &options).unwrap()
 }
 
-fn render(content: &String, site: &SiteMetadata, extra_context: Option<tera::Context>) -> String {
+fn render(content: &String, site: &toml::Value, extra_context: Option<tera::Context>) -> String {
     let mut context = tera::Context::new();
     context.insert("site", &site);
     context.insert("servus", &ServusMetadata { version: env!("CARGO_PKG_VERSION").to_string() });
@@ -498,7 +498,7 @@ fn render(content: &String, site: &SiteMetadata, extra_context: Option<tera::Con
     tera::Tera::one_off(&content, &context, true).unwrap()
 }
 
-fn render_template(template: &str, tera: &tera::Tera, content: String, site: &SiteMetadata, extra_context: tera::Context) -> String {
+fn render_template(template: &str, tera: &tera::Tera, content: String, site: &toml::Value, extra_context: tera::Context) -> String {
     let mut context = tera::Context::new();
     context.insert("site", &site);
     context.insert("servus", &ServusMetadata { version: env!("CARGO_PKG_VERSION").to_string() });
