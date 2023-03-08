@@ -1,56 +1,44 @@
-use std::{
-    collections::HashMap,
-    env,
-    path::{Path, PathBuf},
-    fs,
-    sync::{Arc, RwLock},
-    str,
-    str::FromStr,
-};
 use chrono::NaiveDate;
 use http_types::mime;
-use markdown;
 use regex::Regex;
-use serde::{Serialize, Deserialize};
-use serde_yaml;
-use tera;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    env, fs,
+    path::{Path, PathBuf},
+    str,
+    str::FromStr,
+    sync::{Arc, RwLock},
+};
 use tide::{Request, Response};
-use tide_acme::{AcmeConfig, TideRustlsExt};
 use tide_acme::rustls_acme::caches::DirCache;
-use tide_rustls;
-use tl;
-use toml;
+use tide_acme::{AcmeConfig, TideRustlsExt};
 use walkdir::{DirEntry, WalkDir};
 use yaml_front_matter::YamlFrontMatter;
 
 mod default_site;
 
-#[derive(Clone)]
-#[derive(Serialize)]
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ServusMetadata {
     version: String,
 }
 
-#[derive(Clone)]
-#[derive(Serialize)]
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct PageMetadata {
     title: String,
     description: Option<String>,
     lang: Option<String>,
 }
 
-#[derive(Clone)]
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct Resource {
     url: String,
     mime: String,
     content: Vec<u8>,
     meta: Option<PageMetadata>, // only used for posts and pages
-    text: Option<String>, // only used for posts and pages
-    slug: Option<String>, // only used for posts
-    date: Option<NaiveDate>, // only used for posts
+    text: Option<String>,       // only used for posts and pages
+    slug: Option<String>,       // only used for posts
+    date: Option<NaiveDate>,    // only used for posts
 }
 
 #[derive(Clone)]
@@ -70,7 +58,7 @@ fn get_site_for_request(request: &Request<State>) -> &SiteState {
         Some(host) => {
             if state.sites.contains_key(host) {
                 host.to_string()
-            } else if host.contains(":") {
+            } else if host.contains(':') {
                 let re = Regex::new(r":\d+").unwrap();
                 let portless = re.replace(host, "").to_string();
                 if state.sites.contains_key(&portless) {
@@ -94,40 +82,38 @@ async fn main() -> Result<(), std::io::Error> {
 
     let sites = get_sites();
 
-    let mut app = tide::with_state(State { sites: sites.clone() });
+    let mut app = tide::with_state(State {
+        sites: sites.clone(),
+    });
     app.with(tide::log::LogMiddleware::new());
 
     fn render(resource: &Resource) -> Response {
         let mime = mime::Mime::from_str(resource.mime.as_str()).unwrap();
 
-        Response::builder(200).content_type(mime).header("Access-Control-Allow-Origin", "*").body(&*resource.content).build()
+        Response::builder(200)
+            .content_type(mime)
+            .header("Access-Control-Allow-Origin", "*")
+            .body(&*resource.content)
+            .build()
     }
 
     app.at("/").get(|request: Request<State>| async move {
         let site = &get_site_for_request(&request);
         match site.resources.read().unwrap().get("/index") {
-            Some(index) => {
-                return Ok(render(index));
-            },
-            None => {
-                return Ok(Response::new(404));
-            }
-        };
+            Some(index) => Ok(render(index)),
+            None => Ok(Response::new(404)),
+        }
     });
     app.at("*path").get(|request: Request<State>| async move {
         let site = &get_site_for_request(&request);
-        let mut path = request.param("path")?;
-        if path.ends_with("/") {
-            path = path.strip_suffix("/").unwrap();
+        let mut path = request.param("path").unwrap();
+        if path.ends_with('/') {
+            path = path.strip_suffix('/').unwrap();
         }
         match site.resources.read().unwrap().get(&format!("/{}", &path)) {
-            Some(resource) => {
-                return Ok(render(resource));
-            },
-            None => {
-                return Ok(Response::new(404));
-            },
-        };
+            Some(resource) => Ok(render(resource)),
+            None => Ok(Response::new(404)),
+        }
     });
 
     let addr = "0.0.0.0";
@@ -144,7 +130,7 @@ async fn main() -> Result<(), std::io::Error> {
                 port = 4884;
                 ssl = false;
                 dev_mode = true;
-            },
+            }
             "live" => {
                 production_cert = true;
             }
@@ -168,7 +154,9 @@ async fn main() -> Result<(), std::io::Error> {
     if ssl {
         let domains: Vec<String> = sites.keys().filter(|&x| x != "default").cloned().collect();
         let cache = DirCache::new("./cache");
-        let mut acme_config = AcmeConfig::new(domains).cache(cache).directory_lets_encrypt(production_cert);
+        let mut acme_config = AcmeConfig::new(domains)
+            .cache(cache)
+            .directory_lets_encrypt(production_cert);
         for (domain, site) in sites {
             if domain != "default" {
                 let mut contact: String = "mailto:".to_owned();
@@ -177,7 +165,12 @@ async fn main() -> Result<(), std::io::Error> {
             }
         }
 
-        app.listen(tide_rustls::TlsListener::build().addrs(bind_to).acme(acme_config)).await?;
+        app.listen(
+            tide_rustls::TlsListener::build()
+                .addrs(bind_to)
+                .acme(acme_config),
+        )
+        .await?;
     } else {
         app.listen(bind_to).await?;
     }
@@ -191,29 +184,41 @@ fn get_sites() -> HashMap<String, SiteState> {
         _ => vec![],
     };
 
-    if paths.len() == 0 {
+    if paths.is_empty() {
         println!("No sites found! Generating default site...");
 
         default_site::generate("./sites/default");
 
-        paths = fs::read_dir("./sites").unwrap().map(|r| r.unwrap()).collect();
+        paths = fs::read_dir("./sites")
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
     }
 
     let mut sites = HashMap::new();
     for path in &paths {
         println!("Found site: {}", path.file_name().to_str().unwrap());
-        let site_config_content = match fs::read_to_string(&format!("{}/.servus/config.toml", path.path().display())) {
-            Ok(content) => content,
-            _ => {
-                println!("No site config for site: {}. Skipping!", path.file_name().to_str().unwrap());
-                continue;
-            },
-        };
+        let site_config_content =
+            match fs::read_to_string(&format!("{}/.servus/config.toml", path.path().display())) {
+                Ok(content) => content,
+                _ => {
+                    println!(
+                        "No site config for site: {}. Skipping!",
+                        path.file_name().to_str().unwrap()
+                    );
+                    continue;
+                }
+            };
 
-        let mut tera = tera::Tera::new(&format!("{}/.servus/templates/*.html", fs::canonicalize(path.path()).unwrap().display())).unwrap();
+        let mut tera = tera::Tera::new(&format!(
+            "{}/.servus/templates/*.html",
+            fs::canonicalize(path.path()).unwrap().display()
+        ))
+        .unwrap();
         tera.autoescape_on(vec![]);
 
-        let site_config: HashMap<String, toml::Value> = toml::from_str(&site_config_content).unwrap();
+        let site_config: HashMap<String, toml::Value> =
+            toml::from_str(&site_config_content).unwrap();
 
         let mut site_data: HashMap<String, serde_yaml::Value> = HashMap::new();
 
@@ -222,26 +227,44 @@ fn get_sites() -> HashMap<String, SiteState> {
             _ => vec![],
         };
         for data_path in &site_data_paths {
-            let data_name = data_path.path().file_stem().unwrap().to_str().unwrap().to_string();
+            let data_name = data_path
+                .path()
+                .file_stem()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
             println!("Loading data: {}", &data_name);
             let f = std::fs::File::open(data_path.path()).unwrap();
             let data: serde_yaml::Value = serde_yaml::from_reader(f).unwrap();
             site_data.insert(data_name, data);
         }
 
-        let resources = load_resources(&path.path(), &site_config.get("site").unwrap(), &site_data, &tera);
+        let resources = load_resources(
+            &path.path(),
+            site_config.get("site").unwrap(),
+            &site_data,
+            &tera,
+        );
 
-        sites.insert(path.file_name().to_str().unwrap().to_string(),
-                     SiteState {
-                         site: site_config.get("site").unwrap().clone(),
-                         resources: Arc::new(RwLock::new(resources)),
-                     });
+        sites.insert(
+            path.file_name().to_str().unwrap().to_string(),
+            SiteState {
+                site: site_config.get("site").unwrap().clone(),
+                resources: Arc::new(RwLock::new(resources)),
+            },
+        );
     }
 
     sites
 }
 
-fn get_post(path: &PathBuf, site: &toml::Value, site_data: &HashMap<String, serde_yaml::Value>, tera: &tera::Tera) -> Option<Resource> {
+fn get_post(
+    path: &Path,
+    site: &toml::Value,
+    site_data: &HashMap<String, serde_yaml::Value>,
+    tera: &tera::Tera,
+) -> Option<Resource> {
     let filename = path.file_name().unwrap().to_str().unwrap();
     if filename.len() < 11 {
         println!("Invalid filename: {}", filename);
@@ -252,31 +275,36 @@ fn get_post(path: &PathBuf, site: &toml::Value, site_data: &HashMap<String, serd
     let date = match NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
         Ok(date) => date,
         _ => {
-            println!("Invalid date: {}. Skipping!", date_part.to_string());
+            println!("Invalid date: {}. Skipping!", date_part);
             return None;
         }
     };
 
-    let content = fs::read_to_string(&path.display().to_string()).unwrap();
+    let content = fs::read_to_string(path.display().to_string()).unwrap();
 
     let (text, maybe_meta) = parse_meta(&content);
     if maybe_meta.is_none() {
-        println!("Cannot parse metadata for {}. Skipping post!", path.display());
+        println!(
+            "Cannot parse metadata for {}. Skipping post!",
+            path.display()
+        );
         return None;
     }
 
     let mut meta = maybe_meta.unwrap();
     let html_text = md_to_html(text);
-    let slug = Path::new(&filename[11..]).file_stem().unwrap().to_str().unwrap().to_string();
+    let slug = Path::new(&filename[11..])
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
 
     if meta.description.is_none() {
         let dom = tl::parse(&html_text, tl::ParserOptions::default()).unwrap();
         let parser = dom.parser();
-        match dom.query_selector("p").unwrap().next() {
-            Some(p) => {
-                meta.description = Some(p.get(&parser).unwrap().inner_text(&parser).to_string());
-            }
-            _ => {}
+        if let Some(p) = dom.query_selector("p").unwrap().next() {
+            meta.description = Some(p.get(parser).unwrap().inner_text(parser).to_string());
         }
     }
 
@@ -284,9 +312,9 @@ fn get_post(path: &PathBuf, site: &toml::Value, site_data: &HashMap<String, serd
         url: format!("{}/posts/{}", site.get("url").unwrap(), &slug),
         mime: format!("{}", mime::HTML),
         content: vec![],
-        meta: Some(meta.clone()),
+        meta: Some(meta),
         text: Some(html_text.clone()),
-        slug: Some(slug.clone()),
+        slug: Some(slug),
         date: Some(date),
     };
 
@@ -294,16 +322,27 @@ fn get_post(path: &PathBuf, site: &toml::Value, site_data: &HashMap<String, serd
     extra_context.insert("page", &resource);
     extra_context.insert("data", &site_data);
 
-    resource.content = render_template("post.html", tera, html_text, &site, extra_context).as_bytes().to_vec();
+    resource.content = render_template("post.html", tera, html_text, site, extra_context)
+        .as_bytes()
+        .to_vec();
 
     Some(resource)
 }
 
 fn is_hidden(entry: &DirEntry) -> bool {
-    entry.file_name().to_str().map(|s| s.starts_with(".") && !(s == ".well-known")).unwrap_or(false)
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| s.starts_with('.') && s != ".well-known")
+        .unwrap_or(false)
 }
 
-fn load_posts(site_path: &PathBuf, site: &toml::Value, site_data: &HashMap<String, serde_yaml::Value>, tera: &tera::Tera) -> HashMap<String, Resource> {
+fn load_posts(
+    site_path: &PathBuf,
+    site: &toml::Value,
+    site_data: &HashMap<String, serde_yaml::Value>,
+    tera: &tera::Tera,
+) -> HashMap<String, Resource> {
     let mut posts = HashMap::new();
 
     let mut posts_path = PathBuf::from(site_path);
@@ -314,7 +353,7 @@ fn load_posts(site_path: &PathBuf, site: &toml::Value, site_data: &HashMap<Strin
         if !path.is_file() {
             continue;
         }
-        let maybe_post = get_post(&path, &site, &site_data, &tera);
+        let maybe_post = get_post(&path, site, site_data, tera);
         if maybe_post.is_none() {
             continue;
         }
@@ -328,7 +367,12 @@ fn load_posts(site_path: &PathBuf, site: &toml::Value, site_data: &HashMap<Strin
     posts
 }
 
-fn load_pages(site_path: &PathBuf, site: &toml::Value, tera: &tera::Tera, posts: &Vec<&Resource>) -> HashMap<String, Resource> {
+fn load_pages(
+    site_path: &PathBuf,
+    site: &toml::Value,
+    tera: &tera::Tera,
+    posts: &Vec<&Resource>,
+) -> HashMap<String, Resource> {
     let mut pages = HashMap::new();
 
     let mut posts_path = PathBuf::from(site_path);
@@ -342,25 +386,35 @@ fn load_pages(site_path: &PathBuf, site: &toml::Value, tera: &tera::Tera, posts:
             continue;
         }
 
-        if path.display().to_string().starts_with(posts_path.display().to_string().as_str()) {
+        if path
+            .display()
+            .to_string()
+            .starts_with(posts_path.display().to_string().as_str())
+        {
             continue;
         }
 
         let site_prefix = site_path.display().to_string();
         let path_str = path.display().to_string();
 
-        let resource_path = path_str.strip_prefix(site_prefix.as_str()).unwrap().strip_suffix(".md").unwrap();
-        let mut resource;
+        let resource_path = path_str
+            .strip_prefix(site_prefix.as_str())
+            .unwrap()
+            .strip_suffix(".md")
+            .unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         let (text, maybe_meta) = parse_meta(&content);
         if maybe_meta.is_none() {
-            println!("Cannot parse metadata for {}. Skipping page!", path.display());
+            println!(
+                "Cannot parse metadata for {}. Skipping page!",
+                path.display()
+            );
             continue;
         }
 
         let meta = maybe_meta.unwrap();
-        resource = Resource {
+        let mut resource = Resource {
             url: format!("{}{}", site.get("url").unwrap(), resource_path),
             mime: format!("{}", mime::HTML),
             content: vec![],
@@ -374,10 +428,12 @@ fn load_pages(site_path: &PathBuf, site: &toml::Value, tera: &tera::Tera, posts:
         extra_context.insert("page", &resource);
         extra_context.insert("posts", &posts);
 
-        let rendered_text = render(&text, &site, Some(extra_context.clone()));
+        let rendered_text = render(&text, site, Some(extra_context.clone()));
         let html_text = md_to_html(rendered_text);
         resource.text = Some(html_text.clone());
-        resource.content = render_template("page.html", tera, html_text, &site, extra_context).as_bytes().to_vec();
+        resource.content = render_template("page.html", tera, html_text, site, extra_context)
+            .as_bytes()
+            .to_vec();
 
         println!("Loaded page {} ", resource_path);
         pages.insert(resource_path.to_string(), resource);
@@ -386,7 +442,12 @@ fn load_pages(site_path: &PathBuf, site: &toml::Value, tera: &tera::Tera, posts:
     pages
 }
 
-fn load_extra_resources(site_path: &PathBuf, site: &toml::Value, posts: &Vec<&Resource>, pages: &Vec<&Resource>) -> HashMap<String, Resource> {
+fn load_extra_resources(
+    site_path: &PathBuf,
+    site: &toml::Value,
+    posts: &Vec<&Resource>,
+    pages: &Vec<&Resource>,
+) -> HashMap<String, Resource> {
     let mut resources = HashMap::new();
 
     let walker = WalkDir::new(site_path).into_iter();
@@ -401,67 +462,81 @@ fn load_extra_resources(site_path: &PathBuf, site: &toml::Value, posts: &Vec<&Re
         let path_str = path.display().to_string();
 
         let resource_path = path_str.strip_prefix(site_prefix.as_str()).unwrap();
-        let resource;
+        let mime;
+        let content;
 
         let extension = path.extension().unwrap().to_str().unwrap();
         match extension {
             "xml" | "txt" => {
-                let content = fs::read_to_string(&path).unwrap();
                 let mut extra_context = tera::Context::new();
                 extra_context.insert("posts", &posts);
                 extra_context.insert("pages", &pages);
 
-                resource = Resource {
-                    url: format!("{}{}", site.get("url").unwrap(), resource_path),
-                    mime: format!("{}", if extension == "xml" { mime::XML } else { mime::PLAIN }),
-                    content: render(&content, &site, Some(extra_context)).as_bytes().to_vec(),
-                    meta: None,
-                    text: None,
-                    slug: None,
-                    date: None,
+                content = render(
+                    &fs::read_to_string(&path).unwrap(),
+                    site,
+                    Some(extra_context),
+                )
+                .as_bytes()
+                .to_vec();
+
+                mime = if extension == "xml" {
+                    mime::XML
+                } else {
+                    mime::PLAIN
                 };
             }
             _ => {
-                let content = fs::read(&path).unwrap();
-                let mime = match mime::Mime::sniff(&content) {
+                content = fs::read(&path).unwrap();
+
+                mime = match mime::Mime::sniff(&content) {
                     Ok(m) => m,
-                    _ => {
-                        match mime::Mime::from_extension(&extension) {
-                            Some(m) => m,
-                            _ => mime::PLAIN,
-                        }
-                    }
-                };
-                resource = Resource {
-                    url: format!("{}{}", site.get("url").unwrap(), resource_path),
-                    mime: format!("{}", mime),
-                    content: content,
-                    meta: None,
-                    text: None,
-                    slug: None,
-                    date: None,
+                    _ => match mime::Mime::from_extension(extension) {
+                        Some(m) => m,
+                        _ => mime::PLAIN,
+                    },
                 };
             }
-        }
+        };
 
-        println!("Loaded resource {} {} bytes={}", resource_path, resource.mime, resource.content.len());
+        let resource = Resource {
+            url: format!("{}{}", site.get("url").unwrap(), resource_path),
+            mime: format!("{}", mime),
+            content,
+            meta: None,
+            text: None,
+            slug: None,
+            date: None,
+        };
+
+        println!(
+            "Loaded resource {} {} bytes={}",
+            resource_path,
+            resource.mime,
+            resource.content.len()
+        );
         resources.insert(resource_path.to_string(), resource);
     }
 
     resources
 }
 
-fn load_resources(site_path: &PathBuf, site: &toml::Value, site_data: &HashMap<String, serde_yaml::Value>, tera: &tera::Tera) -> HashMap<String, Resource> {
-    let posts = load_posts(&site_path, &site, &site_data, &tera);
+fn load_resources(
+    site_path: &PathBuf,
+    site: &toml::Value,
+    site_data: &HashMap<String, serde_yaml::Value>,
+    tera: &tera::Tera,
+) -> HashMap<String, Resource> {
+    let posts = load_posts(site_path, site, site_data, tera);
 
     let mut posts_list: Vec<&Resource> = posts.values().into_iter().collect();
     posts_list.sort_by(|a, b| b.date.cmp(&a.date));
 
-    let pages = load_pages(&site_path, &site, &tera, &posts_list);
+    let pages = load_pages(site_path, site, tera, &posts_list);
 
     let pages_list: Vec<&Resource> = pages.values().into_iter().collect();
 
-    let extra_resources = load_extra_resources(&site_path, &site, &posts_list, &pages_list);
+    let extra_resources = load_extra_resources(site_path, site, &posts_list, &pages_list);
 
     let mut resources = HashMap::new();
     resources.extend(posts);
@@ -472,38 +547,58 @@ fn load_resources(site_path: &PathBuf, site: &toml::Value, site_data: &HashMap<S
 }
 
 fn parse_meta(content: &String) -> (String, Option<PageMetadata>) {
-    if let Ok(document) = YamlFrontMatter::parse::<PageMetadata>(&content) {
-        return (document.content, Some(document.metadata));
+    if let Ok(document) = YamlFrontMatter::parse::<PageMetadata>(content) {
+        (document.content, Some(document.metadata))
     } else {
-        return (content.to_string(), None);
+        (content.to_string(), None)
     }
 }
 
 fn md_to_html(md_content: String) -> String {
-    let options = &markdown::Options {compile: markdown::CompileOptions {allow_dangerous_html: true,
-                                                                         ..markdown::CompileOptions::default()},
-                                      ..markdown::Options::default()};
+    let options = &markdown::Options {
+        compile: markdown::CompileOptions {
+            allow_dangerous_html: true,
+            ..markdown::CompileOptions::default()
+        },
+        ..markdown::Options::default()
+    };
 
-    markdown::to_html_with_options(&md_content, &options).unwrap()
+    markdown::to_html_with_options(&md_content, options).unwrap()
 }
 
-fn render(content: &String, site: &toml::Value, extra_context: Option<tera::Context>) -> String {
+fn render(content: &str, site: &toml::Value, extra_context: Option<tera::Context>) -> String {
     let mut context = tera::Context::new();
     context.insert("site", &site);
-    context.insert("servus", &ServusMetadata { version: env!("CARGO_PKG_VERSION").to_string() });
-    if !extra_context.is_none() {
-        context.extend(extra_context.unwrap());
+    context.insert(
+        "servus",
+        &ServusMetadata {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    );
+    if let Some(c) = extra_context {
+        context.extend(c);
     }
 
-    tera::Tera::one_off(&content, &context, true).unwrap()
+    tera::Tera::one_off(content, &context, true).unwrap()
 }
 
-fn render_template(template: &str, tera: &tera::Tera, content: String, site: &toml::Value, extra_context: tera::Context) -> String {
+fn render_template(
+    template: &str,
+    tera: &tera::Tera,
+    content: String,
+    site: &toml::Value,
+    extra_context: tera::Context,
+) -> String {
     let mut context = tera::Context::new();
     context.insert("site", &site);
-    context.insert("servus", &ServusMetadata { version: env!("CARGO_PKG_VERSION").to_string() });
+    context.insert(
+        "servus",
+        &ServusMetadata {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    );
     context.insert("content", &content);
     context.extend(extra_context);
 
-    return tera.render(template, &context).unwrap();
+    tera.render(template, &context).unwrap()
 }
