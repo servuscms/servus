@@ -217,7 +217,7 @@ fn get_sites() -> HashMap<String, SiteState> {
             };
 
         let mut tera = tera::Tera::new(&format!(
-            "{}/.servus/templates/*.html",
+            "{}/.servus/templates/**/*",
             fs::canonicalize(path.path()).unwrap().display()
         ))
         .unwrap();
@@ -250,7 +250,7 @@ fn get_sites() -> HashMap<String, SiteState> {
             &path.path(),
             site_config.get("site").unwrap(),
             &site_data,
-            &tera,
+            &mut tera,
         );
 
         sites.insert(
@@ -377,7 +377,7 @@ fn load_pages(
     site_path: &PathBuf,
     site: &toml::Value,
     site_data: &HashMap<String, serde_yaml::Value>,
-    tera: &tera::Tera,
+    tera: &mut tera::Tera,
     posts: &Vec<&Resource>,
 ) -> HashMap<String, Resource> {
     let mut pages = HashMap::new();
@@ -454,8 +454,12 @@ fn load_pages(
         extra_context.insert("posts", &posts);
         extra_context.insert("data", &site_data);
 
-        let rendered_text = render(&text, site, Some(extra_context.clone()));
-        let html_text = md_to_html(rendered_text);
+        let rendered_text = render(&text, site, Some(extra_context.clone()), tera);
+        let html_text = if extension == "md" {
+            md_to_html(rendered_text)
+        } else {
+            rendered_text
+        };
         resource.text = Some(html_text.clone());
         resource.content = render_template("page.html", tera, html_text, site, extra_context)
             .as_bytes()
@@ -471,6 +475,7 @@ fn load_pages(
 fn load_extra_resources(
     site_path: &PathBuf,
     site: &toml::Value,
+    tera: &mut tera::Tera,
     posts: &Vec<&Resource>,
     pages: &Vec<&Resource>,
 ) -> HashMap<String, Resource> {
@@ -506,6 +511,7 @@ fn load_extra_resources(
                     &fs::read_to_string(&path).unwrap(),
                     site,
                     Some(extra_context),
+                    tera,
                 )
                 .as_bytes()
                 .to_vec();
@@ -556,7 +562,7 @@ fn load_resources(
     site_path: &PathBuf,
     site: &toml::Value,
     site_data: &HashMap<String, serde_yaml::Value>,
-    tera: &tera::Tera,
+    tera: &mut tera::Tera,
 ) -> HashMap<String, Resource> {
     let posts = load_posts(site_path, site, site_data, tera);
 
@@ -567,7 +573,7 @@ fn load_resources(
 
     let pages_list: Vec<&Resource> = pages.values().into_iter().collect();
 
-    let extra_resources = load_extra_resources(site_path, site, &posts_list, &pages_list);
+    let extra_resources = load_extra_resources(site_path, site, tera, &posts_list, &pages_list);
 
     let mut resources = HashMap::new();
     resources.extend(posts);
@@ -597,7 +603,12 @@ fn md_to_html(md_content: String) -> String {
     markdown::to_html_with_options(&md_content, options).unwrap()
 }
 
-fn render(content: &str, site: &toml::Value, extra_context: Option<tera::Context>) -> String {
+fn render(
+    content: &str,
+    site: &toml::Value,
+    extra_context: Option<tera::Context>,
+    tera: &mut tera::Tera,
+) -> String {
     let mut context = tera::Context::new();
     context.insert("site", &site);
     context.insert(
@@ -610,7 +621,7 @@ fn render(content: &str, site: &toml::Value, extra_context: Option<tera::Context
         context.extend(c);
     }
 
-    tera::Tera::one_off(content, &context, true).unwrap()
+    tera.render_str(content, &context).unwrap()
 }
 
 fn render_template(
