@@ -26,6 +26,7 @@ struct ServusMetadata {
 #[derive(Clone, Serialize, Deserialize)]
 struct PageMetadata {
     title: String,
+    permalink: Option<String>,
     description: Option<String>,
     lang: Option<String>,
 }
@@ -35,6 +36,7 @@ struct Resource {
     url: String,
     mime: String,
     content: Vec<u8>,
+    excerpt: Option<String>,    // only used for posts and pages
     meta: Option<PageMetadata>, // only used for posts and pages
     text: Option<String>,       // only used for posts and pages
     slug: Option<String>,       // only used for posts
@@ -110,9 +112,13 @@ async fn main() -> Result<(), std::io::Error> {
         if path.ends_with('/') {
             path = path.strip_suffix('/').unwrap();
         }
-        match site.resources.read().unwrap().get(&format!("/{}", &path)) {
+        let resources = site.resources.read().unwrap();
+        match resources.get(&format!("/{}", &path)) {
             Some(resource) => Ok(render(resource)),
-            None => Ok(Response::new(404)),
+            None => match resources.get(&format!("/{}/index", &path)) {
+                Some(resource) => Ok(render(resource)),
+                None => Ok(Response::new(404)),
+            },
         }
     });
 
@@ -291,7 +297,7 @@ fn get_post(
         return None;
     }
 
-    let mut meta = maybe_meta.unwrap();
+    let meta = maybe_meta.unwrap();
     let html_text = md_to_html(text);
     let slug = Path::new(&filename[11..])
         .file_stem()
@@ -300,18 +306,18 @@ fn get_post(
         .unwrap()
         .to_string();
 
-    if meta.description.is_none() {
-        let dom = tl::parse(&html_text, tl::ParserOptions::default()).unwrap();
-        let parser = dom.parser();
-        if let Some(p) = dom.query_selector("p").unwrap().next() {
-            meta.description = Some(p.get(parser).unwrap().inner_text(parser).to_string());
-        }
+    let mut excerpt: Option<String> = None;
+    let dom = tl::parse(&html_text, tl::ParserOptions::default()).unwrap();
+    let parser = dom.parser();
+    if let Some(p) = dom.query_selector("p").unwrap().next() {
+        excerpt = Some(p.get(parser).unwrap().inner_text(parser).to_string());
     }
 
     let mut resource = Resource {
         url: format!("{}/posts/{}", site.get("url").unwrap(), &slug),
         mime: format!("{}", mime::HTML),
         content: vec![],
+        excerpt,
         meta: Some(meta),
         text: Some(html_text.clone()),
         slug: Some(slug),
@@ -322,7 +328,7 @@ fn get_post(
     extra_context.insert("page", &resource);
     extra_context.insert("data", &site_data);
 
-    resource.content = render_template("post.html", tera, html_text, site, extra_context)
+    resource.content = render_template("post.html", tera, html_text.clone(), site, extra_context)
         .as_bytes()
         .to_vec();
 
@@ -370,6 +376,7 @@ fn load_posts(
 fn load_pages(
     site_path: &PathBuf,
     site: &toml::Value,
+    site_data: &HashMap<String, serde_yaml::Value>,
     tera: &tera::Tera,
     posts: &Vec<&Resource>,
 ) -> HashMap<String, Resource> {
@@ -382,7 +389,12 @@ fn load_pages(
     for entry in page_walker.filter_entry(|e| !is_hidden(e)) {
         let path = entry.unwrap().into_path();
 
-        if !path.is_file() || path.extension().unwrap().to_str().unwrap() != "md" {
+        if !path.is_file() {
+            continue;
+        }
+
+        let extension = path.extension().unwrap().to_str().unwrap();
+        if extension != "md" && extension != "html" {
             continue;
         }
 
@@ -397,28 +409,41 @@ fn load_pages(
         let site_prefix = site_path.display().to_string();
         let path_str = path.display().to_string();
 
-        let resource_path = path_str
-            .strip_prefix(site_prefix.as_str())
-            .unwrap()
-            .strip_suffix(".md")
-            .unwrap();
-
         let content = fs::read_to_string(&path).unwrap();
         let (text, maybe_meta) = parse_meta(&content);
-        if maybe_meta.is_none() {
-            println!(
-                "Cannot parse metadata for {}. Skipping page!",
-                path.display()
-            );
-            continue;
-        }
+        let meta = match maybe_meta {
+            Some(m) => m,
+            None => {
+                println!(
+                    "Cannot parse metadata for {}. Skipping page!",
+                    path.display()
+                );
+                continue;
+            }
+        };
 
-        let meta = maybe_meta.unwrap();
+        let resource_path = if meta.permalink.is_some() {
+            meta.clone()
+                .permalink
+                .unwrap()
+                .strip_suffix('/')
+                .unwrap()
+                .to_string()
+        } else {
+            path_str
+                .strip_prefix(site_prefix.as_str())
+                .unwrap()
+                .strip_suffix(&format!(".{}", extension))
+                .unwrap()
+                .to_string()
+        };
+
         let mut resource = Resource {
             url: format!("{}{}", site.get("url").unwrap(), resource_path),
             mime: format!("{}", mime::HTML),
             content: vec![],
-            meta: Some(meta.clone()),
+            excerpt: None,
+            meta: Some(meta),
             text: None,
             slug: None,
             date: None,
@@ -427,6 +452,7 @@ fn load_pages(
         let mut extra_context = tera::Context::new();
         extra_context.insert("page", &resource);
         extra_context.insert("posts", &posts);
+        extra_context.insert("data", &site_data);
 
         let rendered_text = render(&text, site, Some(extra_context.clone()));
         let html_text = md_to_html(rendered_text);
@@ -454,7 +480,11 @@ fn load_extra_resources(
     for entry in walker.filter_entry(|e| !is_hidden(e)) {
         let path = entry.unwrap().into_path();
 
-        if !path.is_file() || path.extension().unwrap().to_str().unwrap() == "md" {
+        if !path.is_file() {
+            continue;
+        }
+        let extension = path.extension().unwrap().to_str().unwrap();
+        if extension == "md" || extension == "html" {
             continue;
         }
 
@@ -503,6 +533,7 @@ fn load_extra_resources(
             url: format!("{}{}", site.get("url").unwrap(), resource_path),
             mime: format!("{}", mime),
             content,
+            excerpt: None,
             meta: None,
             text: None,
             slug: None,
@@ -532,7 +563,7 @@ fn load_resources(
     let mut posts_list: Vec<&Resource> = posts.values().into_iter().collect();
     posts_list.sort_by(|a, b| b.date.cmp(&a.date));
 
-    let pages = load_pages(site_path, site, tera, &posts_list);
+    let pages = load_pages(site_path, site, site_data, tera, &posts_list);
 
     let pages_list: Vec<&Resource> = pages.values().into_iter().collect();
 
