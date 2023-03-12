@@ -204,8 +204,8 @@ fn get_sites() -> HashMap<String, SiteState> {
     let mut sites = HashMap::new();
     for path in &paths {
         println!("Found site: {}", path.file_name().to_str().unwrap());
-        let site_config_content =
-            match fs::read_to_string(&format!("{}/.servus/config.toml", path.path().display())) {
+        let config_content =
+            match fs::read_to_string(&format!("{}/_config.toml", path.path().display())) {
                 Ok(content) => content,
                 _ => {
                     println!(
@@ -216,19 +216,23 @@ fn get_sites() -> HashMap<String, SiteState> {
                 }
             };
 
+        let config: HashMap<String, toml::Value> = toml::from_str(&config_content).unwrap();
+        let site_config = config.get("site").unwrap();
+
+        println!("Loading layouts...");
+
         let mut tera = tera::Tera::new(&format!(
-            "{}/.servus/templates/**/*",
+            "{}/_layouts/**/*",
             fs::canonicalize(path.path()).unwrap().display()
         ))
         .unwrap();
         tera.autoescape_on(vec![]);
 
-        let site_config: HashMap<String, toml::Value> =
-            toml::from_str(&site_config_content).unwrap();
+        println!("Loaded {} templates!", tera.get_template_names().count());
 
         let mut site_data: HashMap<String, serde_yaml::Value> = HashMap::new();
 
-        let site_data_paths = match fs::read_dir(format!("{}/data", path.path().display())) {
+        let site_data_paths = match fs::read_dir(format!("{}/_data", path.path().display())) {
             Ok(paths) => paths.map(|r| r.unwrap()).collect(),
             _ => vec![],
         };
@@ -246,17 +250,12 @@ fn get_sites() -> HashMap<String, SiteState> {
             site_data.insert(data_name, data);
         }
 
-        let resources = load_resources(
-            &path.path(),
-            site_config.get("site").unwrap(),
-            &site_data,
-            &mut tera,
-        );
+        let resources = load_resources(&path.path(), site_config, &site_data, &mut tera);
 
         sites.insert(
             path.file_name().to_str().unwrap().to_string(),
             SiteState {
-                site: site_config.get("site").unwrap().clone(),
+                site: site_config.clone(),
                 resources: Arc::new(RwLock::new(resources)),
             },
         );
@@ -335,11 +334,11 @@ fn get_post(
     Some(resource)
 }
 
-fn is_hidden(entry: &DirEntry) -> bool {
+fn skipped(entry: &DirEntry) -> bool {
     entry
         .file_name()
         .to_str()
-        .map(|s| s.starts_with('.') && s != ".well-known")
+        .map(|s| (s.starts_with('.') || s.starts_with('_')) && s != ".well-known")
         .unwrap_or(false)
 }
 
@@ -352,7 +351,7 @@ fn load_posts(
     let mut posts = HashMap::new();
 
     let mut posts_path = PathBuf::from(site_path);
-    posts_path.push("posts/");
+    posts_path.push("_posts/");
 
     for entry in WalkDir::new(&posts_path) {
         let path = entry.unwrap().into_path();
@@ -386,7 +385,7 @@ fn load_pages(
     posts_path.push("posts/");
 
     let page_walker = WalkDir::new(site_path).into_iter();
-    for entry in page_walker.filter_entry(|e| !is_hidden(e)) {
+    for entry in page_walker.filter_entry(|e| !skipped(e)) {
         let path = entry.unwrap().into_path();
 
         if !path.is_file() {
@@ -482,7 +481,7 @@ fn load_extra_resources(
     let mut resources = HashMap::new();
 
     let walker = WalkDir::new(site_path).into_iter();
-    for entry in walker.filter_entry(|e| !is_hidden(e)) {
+    for entry in walker.filter_entry(|e| !skipped(e)) {
         let path = entry.unwrap().into_path();
 
         if !path.is_file() {
