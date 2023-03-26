@@ -5,18 +5,23 @@ edition = "2021"
 
 [dependencies]
 async-std = { version = "1", features = ["attributes"] }
+bitcoin_hashes = { version = "0.12", features = ["serde"] }
 chrono = { version = "0", features = ["serde"] }
 femme = "2"
 http-types = "2"
+lazy_static = "1.4"
 markdown = "1.0.0-alpha.3"
 regex = "1"
+secp256k1 = { version = "0.27", features = ["serde", "bitcoin_hashes"] }
 serde = "1"
-serde_yaml = "0"
+serde_json = "1"
+serde_yaml = "0.9"
 tera = "1"
 tide = "0"
 tide-acme = "0"
 tide-rustls = "0"
 tide-tera = "0"
+tide-websockets = "0"
 tl = "0"
 toml = "0"
 walkdir = "2"
