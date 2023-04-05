@@ -712,7 +712,12 @@ fn render_page(
         rendered_text
     };
 
-    render_template("page.html", tera, &html, site, extra_context)
+    let layout = match resource.front_matter.get("layout") {
+        Some(layout) => format!("{}.html", layout.as_str().unwrap()),
+        _ => "page.html".to_string(),
+    };
+
+    render_template(&layout, tera, &html, site, extra_context)
         .as_bytes()
         .to_vec()
 }
