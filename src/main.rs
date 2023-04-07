@@ -13,7 +13,7 @@ use std::{
     str::FromStr,
     sync::{Arc, RwLock},
 };
-use tide::{log, Request, Response};
+use tide::{log, Redirect, Request, Response};
 use tide_acme::rustls_acme::caches::DirCache;
 use tide_acme::{AcmeConfig, TideRustlsExt};
 use tide_websockets::{Message, WebSocket};
@@ -49,6 +49,7 @@ struct Resource {
     mime: String,
 
     // only used for posts and pages
+    redirect_to: Option<String>,
     summary: Option<String>,
     front_matter: HashMap<String, serde_yaml::Value>,
 
@@ -134,6 +135,7 @@ fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
         path: path.display().to_string(),
         url: format!("/posts/{}", &slug),
         mime: format!("{}", mime::HTML),
+        redirect_to: None,
         summary,
         front_matter: front_matter.to_owned(),
         inner_html: None,
@@ -363,6 +365,9 @@ async fn main() -> Result<(), std::io::Error> {
                 let site_content = site_state.content.read().unwrap();
                 match site_resources.get(&resource_path) {
                     Some(resource) => {
+                        if resource.redirect_to.is_some() {
+                            return Ok(Redirect::new(resource.redirect_to.as_ref().unwrap()).into());
+                        }
                         let content = site_content.get(&resource_path).unwrap();
                         if content.content.is_some() {
                             return Ok(build_response(resource, content));
@@ -387,6 +392,9 @@ async fn main() -> Result<(), std::io::Error> {
             resource_path = format!("/{}", &path);
             match site_resources.get(&resource_path) {
                 Some(resource) => {
+                    if resource.redirect_to.is_some() {
+                        return Ok(Redirect::new(resource.redirect_to.as_ref().unwrap()).into());
+                    }
                     let content = site_content.get(&resource_path).unwrap();
                     if content.content.is_some() {
                         return Ok(build_response(resource, content));
@@ -611,11 +619,16 @@ fn get_post(
         summary = Some(p.get(parser).unwrap().inner_text(parser).to_string());
     }
 
+    let redirect_to = front_matter
+        .get("redirect_to")
+        .map(|r| r.as_str().unwrap().to_owned());
+
     let resource = Resource {
         resource_type: ResourceType::Post,
         path: path.display().to_string(),
         url: format!("/posts/{}", &slug),
         mime: format!("{}", mime::HTML),
+        redirect_to,
         summary,
         front_matter,
         inner_html: Some(html.to_owned()),
@@ -781,11 +794,16 @@ fn load_pages(
             None => resource_path.to_owned(),
         };
 
+        let redirect_to = front_matter
+            .get("redirect_to")
+            .map(|r| r.as_str().unwrap().to_owned());
+
         let resource = Resource {
             resource_type: ResourceType::Page,
             path: path.display().to_string(),
             url: canonical_resource_path,
             mime: format!("{}", mime::HTML),
+            redirect_to,
             summary: None,
             front_matter,
             inner_html: None,
@@ -886,6 +904,7 @@ fn load_extra_resources(
             path: path_str.to_owned(),
             url: resource_path.to_owned(),
             mime: format!("{}", mime),
+            redirect_to: None,
             summary: None,
             front_matter: HashMap::new(),
             inner_html: None,
