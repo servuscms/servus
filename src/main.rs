@@ -132,11 +132,7 @@ fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
     let post = Resource {
         resource_type: ResourceType::Post,
         path: path.display().to_string(),
-        url: format!(
-            "{}/posts/{}",
-            site_state.site.get("url").unwrap().as_str().unwrap(),
-            &slug
-        ),
+        url: format!("/posts/{}", &slug),
         mime: format!("{}", mime::HTML),
         summary,
         front_matter: front_matter.to_owned(),
@@ -618,11 +614,7 @@ fn get_post(
     let resource = Resource {
         resource_type: ResourceType::Post,
         path: path.display().to_string(),
-        url: format!(
-            "{}/posts/{}",
-            site.get("url").unwrap().as_str().unwrap(),
-            &slug
-        ),
+        url: format!("/posts/{}", &slug),
         mime: format!("{}", mime::HTML),
         summary,
         front_matter,
@@ -792,11 +784,7 @@ fn load_pages(
         let resource = Resource {
             resource_type: ResourceType::Page,
             path: path.display().to_string(),
-            url: format!(
-                "{}{}",
-                site.get("url").unwrap().as_str().unwrap(),
-                canonical_resource_path,
-            ),
+            url: canonical_resource_path,
             mime: format!("{}", mime::HTML),
             summary: None,
             front_matter,
@@ -896,11 +884,7 @@ fn load_extra_resources(
         let resource = Resource {
             resource_type: ResourceType::Extra,
             path: path_str.to_owned(),
-            url: format!(
-                "{}{}",
-                site.get("url").unwrap().as_str().unwrap(),
-                resource_path
-            ),
+            url: resource_path.to_owned(),
             mime: format!("{}", mime),
             summary: None,
             front_matter: HashMap::new(),
