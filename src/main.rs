@@ -133,7 +133,7 @@ fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
     let post = Resource {
         resource_type: ResourceType::Post,
         path: path.display().to_string(),
-        url: format!("/posts/{}", &slug),
+        url: get_post_url(&site_state.site, &slug),
         mime: format!("{}", mime::HTML),
         redirect_to: None,
         summary,
@@ -148,10 +148,10 @@ fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
 
     let html = md_to_html(&event.content);
 
-    let resource_path = format!("/posts/{}", post.slug.as_ref().unwrap());
+    let resource_path = post.url.to_owned();
 
     let mut resources = site_state.resources.write().unwrap();
-    resources.insert(resource_path.to_string(), post);
+    resources.insert(resource_path.clone(), post);
 
     let content = render_template(
         "post.html",
@@ -571,6 +571,13 @@ fn get_sites() -> HashMap<String, SiteState> {
     sites
 }
 
+fn get_post_url(site: &toml::Value, slug: &str) -> String {
+    site.get("post_permalink").map_or_else(
+        || format!("/posts/{}", &slug),
+        |p| p.as_str().unwrap().replace(":slug", &slug),
+    )
+}
+
 fn get_post(
     path: &Path,
     site: &toml::Value,
@@ -626,7 +633,7 @@ fn get_post(
     let resource = Resource {
         resource_type: ResourceType::Post,
         path: path.display().to_string(),
-        url: format!("/posts/{}", &slug),
+        url: get_post_url(site, &slug),
         mime: format!("{}", mime::HTML),
         redirect_to,
         summary,
@@ -682,11 +689,11 @@ fn load_posts(
             continue;
         }
         let (post, post_content) = maybe_post.unwrap();
-        let resource_path = format!("/posts/{}", post.slug.as_ref().unwrap());
+        let resource_path = post.url.to_owned();
 
         println!("Loaded post {} from {}", resource_path, post.path);
         posts.insert(resource_path.to_string(), post);
-        posts_content.insert(resource_path.to_string(), post_content);
+        posts_content.insert(resource_path, post_content);
     }
 
     (posts, posts_content)

@@ -70,6 +70,16 @@ Files ending in `.xml` or `.txt` are preprocessed using the template engine, so 
 
 Other files are considered "raw" and sent to the clients as they are.
 
+## _config.toml
+
+Every site needs a config file which has one section named `site`.
+
+The only required property is `contact_email`, which is used for requesting certificates from Let's Encrypt.
+
+All properties present under `[site]` are passed directly to the templates: `title` becomes `site.title`, `url` becomes `site.url`, etc.
+
+`post_permalink`, if specified, is used to generate permalinks for posts by replacing `:slug` with the actual *slug* of the post. If not specified, it defaults to `/posts/:slug`.
+
 ## Templating
 
 Templating is handled by `Tera`, which looks familiar to anyone who has used Liquid or Jinja2. See Tera's [documentation](https://tera.netlify.app/docs/) for more details.
