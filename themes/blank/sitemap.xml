@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd" xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    {% for post in posts %}
+        <url>
+            <loc>{{ post.url | safe }}</loc>
+        </url>
+    {% endfor %}
+    {% for page in pages %}
+        {% set url = page.url | trim_end_matches(pat="/index") %}
+        {% if url == site.url and not url is ending_with("/") %}
+            {% set url = url ~ "/" %}
+        {% endif %}
+        <url>
+            <loc>{{ url | safe }}</loc>
+        </url>
+    {% endfor %}
+</urlset>

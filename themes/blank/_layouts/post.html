@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+    <div class="post">
+        <span class="date">{{ page.published_at | date(format="%d %B %Y") }}</span>
+        <h1>{{ page.front_matter.title }}</h1>
+        {{ content }}
+    </div>
+{% endblock %}
