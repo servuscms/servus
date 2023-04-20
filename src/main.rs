@@ -20,8 +20,11 @@ use tide_websockets::{Message, WebSocket};
 use walkdir::{DirEntry, WalkDir};
 use yaml_front_matter::YamlFrontMatter;
 
-mod default_site;
 mod nostr;
+
+mod default_theme {
+    include!(concat!(env!("OUT_DIR"), "/themes.rs"));
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ServusMetadata {
@@ -496,7 +499,7 @@ fn get_sites() -> HashMap<String, SiteState> {
     if paths.is_empty() {
         println!("No sites found! Generating default site...");
 
-        default_site::generate("./sites/default");
+        default_theme::generate("./sites/default");
 
         paths = fs::read_dir("./sites")
             .unwrap()
