@@ -9,7 +9,7 @@
     <entry>
         <title>{{ post.title }}</title>
         <link href="{{ site.url }}{{ post.url }}" />
-        <updated>{{ post.published_at | date }}</updated>
+        <updated>{{ post.date }}</updated>
         <id>{{ site.url }}{{ post.url }}</id>
         <content type="xhtml">
             <div xmlns="http://www.w3.org/1999/xhtml">

@@ -60,7 +60,7 @@ struct Resource {
     // only used for posts
     inner_html: Option<String>,
     slug: Option<String>,
-    published_at: Option<NaiveDate>,
+    date: Option<NaiveDate>,
 }
 
 #[derive(Clone)]
@@ -144,7 +144,7 @@ fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
         front_matter: front_matter.to_owned(),
         inner_html: None,
         slug: Some(slug.to_owned()),
-        published_at: Some(published_at),
+        date: Some(published_at),
     };
     let mut extra_context = tera::Context::new();
     extra_context.insert("page", &post);
@@ -599,7 +599,7 @@ fn get_post(
     }
 
     let date_part = &filename[0..10];
-    let published_at = match NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+    let date = match NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
         Ok(date) => date,
         _ => {
             println!("Invalid date: {}. Skipping!", date_part);
@@ -644,7 +644,7 @@ fn get_post(
         front_matter,
         inner_html: Some(html.to_owned()),
         slug: Some(slug),
-        published_at: Some(published_at),
+        date: Some(date),
     };
 
     let mut extra_context = tera::Context::new();
@@ -819,7 +819,7 @@ fn load_pages(
             front_matter,
             inner_html: None,
             slug: None,
-            published_at: None,
+            date: None,
         };
 
         let content = Content {
@@ -920,7 +920,7 @@ fn load_extra_resources(
             front_matter: HashMap::new(),
             inner_html: None,
             slug: None,
-            published_at: None,
+            date: None,
         };
 
         resources.insert(resource_path.to_string(), resource);
@@ -942,7 +942,7 @@ fn get_posts_list(resources: &HashMap<String, Resource>) -> Vec<&Resource> {
         .into_iter()
         .filter(|&r| r.resource_type == ResourceType::Post)
         .collect();
-    posts_list.sort_by(|a, b| b.published_at.cmp(&a.published_at));
+    posts_list.sort_by(|a, b| b.date.cmp(&a.date));
 
     posts_list
 }
