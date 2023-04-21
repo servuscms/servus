@@ -6,12 +6,12 @@
         <meta property="og:site_name" content="{{ site.title }}" />
         <link rel="canonical" href="{{ page.url }}" />
         <meta property="og:url" content="{{ page.url }}" />
-        {% if page and page.front_matter.title %}
-            <title>{{ page.front_matter.title }} | {{ site.title }}</title>
-            <meta property="og:title" content="{{ page.front_matter.title }}" />
-            {% if page.front_matter.description %}
-                <meta name="description" content="{{ page.front_matter.description }}" />
-                <meta property="og:description" content="{{ page.front_matter.description }}" />
+        {% if page and page.title %}
+            <title>{{ page.title }} | {{ site.title }}</title>
+            <meta property="og:title" content="{{ page.title }}" />
+            {% if page.description %}
+                <meta name="description" content="{{ page.description }}" />
+                <meta property="og:description" content="{{ page.description }}" />
             {% endif %}
         {% else %}
             <title>{{ site.title }} | {{ site.tagline }}</title>

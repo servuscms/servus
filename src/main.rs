@@ -54,6 +54,7 @@ struct Resource {
     // only used for posts and pages
     redirect_to: Option<String>,
     summary: Option<String>,
+    #[serde(flatten)]
     front_matter: HashMap<String, serde_yaml::Value>,
 
     // only used for posts
@@ -711,7 +712,7 @@ fn render_page(
     tera: &mut tera::Tera,
 ) -> Vec<u8> {
     let mut extra_context = tera::Context::new();
-    extra_context.insert("page", &resource);
+    extra_context.insert("page", resource);
     extra_context.insert("posts", &posts);
     extra_context.insert("data", &site_data);
 
