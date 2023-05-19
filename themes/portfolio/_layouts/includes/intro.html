@@ -1,0 +1,19 @@
+{% set assets_path = "/assets/images/carousel/" %}
+{% set intro = data.intro | filter(attribute="lang", value=page.lang) | first %}
+
+<section id="intro">
+    <div class="">
+        <div class="owl-carousel owl-theme carousel-1">
+            {% for k,item in intro.items %}
+                {% set image_file = assets_path ~ item.image ~ ".jpg" %}
+                <div class="item">
+                    <div class="image car-image" style="background-image: url('{{ image_file }}')"></div>
+                    <div class="text-container position-absolute">
+                        <p>{{ item.keyword }}</p>
+                        <h1>{{ item.text }}</h1>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    </div>
+</section>

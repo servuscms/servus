@@ -1,0 +1,11 @@
+---
+title: Despre
+permalink: /ro/despre/
+lang: ro
+en_url: /en/about/
+ro_url: /ro/despre/
+---
+
+{% set about = data.about | filter(attribute="lang", value=page.lang) | first %}
+
+{{ about.content }}

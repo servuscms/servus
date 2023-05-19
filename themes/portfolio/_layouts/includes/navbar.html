@@ -1,0 +1,41 @@
+{% if page.lang is defined %}
+    {% set lang = page.lang %}
+{% else %}
+    {% set lang = "en" %}
+{% endif %}
+
+{% set nav = data.nav | filter(attribute="lang", value=lang) | first %}
+
+<nav class="navbar fixed-top navbar-expand-lg navbar-light bg-white">
+    <div class="container">
+        <a class="navbar-brand" href="/{{ lang }}/">
+            <img src="/assets/images/icons/icon-180.png" class="d-inline-block align-top logo">
+            {{ site.url }}
+        </a>
+        <div class="collapse navbar-collapse" id="navbarNavAltMarkup">
+            <div class="navbar-nav ml-auto">
+                {% for item in nav.items %}
+                    {% if item.link == '#' %}
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">{{ item.title }}</a>
+                            <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                                {% for item in data.portfolio %}
+                                    <a class="dropdown-item nav-link" href="{{ item.link }}">{{ item.title }}</a>
+                                {% endfor %}
+                            </div>
+                        </li>
+                    {% else %}
+                        <a class="nav-item nav-link {% if page.url == item.link %}active{% endif %}" href="{{ item.link }}">{{ item.title }}</a>
+                    {% endif %}
+                {% endfor %}
+		{# TODO: iterate over available languages #}
+                {% if page.ro_url is defined and page | get(key="lang", default="") != 'ro' %}
+                    <a class="nav-item nav-link" href="{{ page.ro_url }}">(RO)</a>
+                {% endif %}
+                {% if page.en_url is defined and page | get(key="lang", default="") != 'en' %}
+                    <a class="nav-item nav-link" href="{{ page.en_url }}">(EN)</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</nav>
