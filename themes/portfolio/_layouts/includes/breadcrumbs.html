@@ -1,12 +1,14 @@
 {% set crumbs = page.url | trim_end_matches(pat="/index") | split(pat="/") %}
 
-<ul class="breadcrumbs">
-    <li><a href="/">Home</a></li>
-    {% for crumb in crumbs | slice(start=2) %}
-        {% if loop.last %}
-            <li><a href="#">{{ crumb | replace(from="-", to=" ") | trim_end_matches(pat=".html") | capitalize | truncate(length=20) }}</a></li>
-        {% else %}
-            <li><a href="{% set crumb_limit = loop.index + 2 %}{% for crumb in crumbs | slice(end=crumb_limit) %}{{ crumb ~ "/" }}{% endfor %}">{{ crumb | replace(from="-", to=" ") | trim_end_matches(pat=".html") | capitalize }}</a></li>
-        {% endif %}
-    {% endfor %}
-</ul>
+<div class="text-sm breadcrumbs">
+    <ul>
+        <li><a href="/">Home</a></li>
+        {% for crumb in crumbs | slice(start=2) %}
+            {% if loop.last %}
+                <li><a href="#">{{ crumb | replace(from="-", to=" ") | trim_end_matches(pat=".html") | capitalize | truncate(length=20) }}</a></li>
+            {% else %}
+                <li><a href="{% set crumb_limit = loop.index + 2 %}{% for crumb in crumbs | slice(end=crumb_limit) %}{{ crumb ~ "/" }}{% endfor %}">{{ crumb | replace(from="-", to=" ") | trim_end_matches(pat=".html") | capitalize }}</a></li>
+            {% endif %}
+        {% endfor %}
+    </ul>
+</div>
