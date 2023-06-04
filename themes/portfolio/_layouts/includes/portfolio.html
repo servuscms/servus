@@ -1,23 +1,24 @@
-<section id="portfolio" class="main-section">
-    <div class="row">
-        <div class="col-md-12">
-            <h3 class="section-title text-center">Portfolio</h3>
-        </div>
-    </div>
+{% if page.lang is defined %}
+    {% set lang = page.lang %}
+{% else %}
+    {% set lang = "en" %}
+{% endif %}
 
-    <div class="container">
-        <div class="portfolio__project-wrapper row">
-            {% for item in data.portfolio %}
-                <div class="portfolio__project col-xs-12 col-sm-6 col-lg-4 text-center">
-                        <div class="image portfolio__project__preview" style="background-image: url({{item.image}})"></div>
-                        <div class="portfolio__project__description">
-                            <div class="info-wrapper">
-                                <h3 class="portfolio__project__name">{{ item.title }}</h3>
-                                <p class="portfolio__project__category">{{ item.category }}</p>
-                            </div>
-                        </div>
+{% set portfolio = data.portfolio | filter(attribute="lang", value=lang) | first %}
+
+<section class="w-full">
+    <div>
+        <h3 class="text-center text-3xl my-8">{{ portfolio.title }}</h3>
+    </div>
+    <div class="flex flex-col lg:flex-row justify-center items-center">
+        {% for item in portfolio.items %}
+            <div class="card card-compact w-96 bg-base-200 shadow-xl p-4 m-4">
+                <figure><a href="{{ item.link }}"><img src="{{item.image}}" /></a></figure>
+                <div class="card-body">
+                    <a href="{{ item.link }}"><h3 class="card-title">{{ item.title }}</h3></a>
+                    <div class="badge badge-outline">{{ item.category }}</div>
                 </div>
-            {% endfor %}
-        </div>
+            </div>
+        {% endfor %}
     </div>
 </section>
