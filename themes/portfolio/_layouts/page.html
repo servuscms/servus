@@ -1,10 +1,9 @@
 {% extends "base.html" %}
 
 {% block content %}
-    <div class="mx-2 lg:mx-0 w-full lg:w-11/12">
-        {% include "includes/breadcrumbs.html" %}
-        <div>
-            <article>
+    <div class="py-8 mx-2 mt-28 lg:mx-0 w-full lg:w-11/12">
+        <div class="flex justify-center items-center">
+            <article class="prose lg:prose-xl prose-slate">
                 {% filter safe %}
                     {{ content }}
                 {% endfilter %}

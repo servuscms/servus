@@ -2,12 +2,32 @@
 {% set intro = data.intro | filter(attribute="lang", value=page.lang) | first %}
 
 <section>
-    <div class="carousel rounded-box">
-        {% for k, item in intro.items %}
-            {% set image_file = assets_path ~ item.image ~ ".jpg" %}
-            <div class="carousel-item w-full">
-                <img src="{{ image_file }}" class="w-full" />
-            </div>
-        {% endfor %}
+    <div class="flex justify-center items-center">
+        <div id="carouselBox" class="w-11/12 max-w-7xl carousel rounded-box">
+            {% for item in intro.items %}
+                {% set image_file = assets_path ~ item.image %}
+                <div class="carousel-item w-full flex flex-col">
+                    <img src="{{ image_file }}" class="w-full rounded-box" />
+                    <div class="flex justify-center items-center text-5xl text-primary mt-4">{{ item.keyword }}</div>
+                </div>
+            {% endfor %}
+        </div>
     </div>
 </section>
+
+<script>
+    function autoslider(numSlides) {
+        "use strict";
+        const carouselBox = document.getElementById('carouselBox');
+        let slide = 0
+        setInterval(() => {
+            if (slide >= carouselBox.scrollWidth) {
+                slide = 0;
+            } else {
+                slide += (carouselBox.scrollWidth / numSlides);
+            }
+            carouselBox.scrollLeft = slide;
+        }, 4000 /* ms delay */);
+    }
+    autoslider({{ intro.items | length }});
+</script>

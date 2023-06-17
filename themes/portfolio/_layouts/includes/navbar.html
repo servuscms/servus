@@ -6,7 +6,24 @@
 
 {% set nav = data.nav | filter(attribute="lang", value=lang) | first %}
 
-<div class="navbar bg-base-100">
+<style>
+    .shrink {
+        min-height: 30px;
+        font-size: 10px;
+    }
+</style>
+
+<script>
+  window.onscroll = function() {
+	  if (document.documentElement.scrollTop > 50) {
+		  document.getElementById('navbar').classList.add('shrink');
+	  } else {
+          document.getElementById('navbar').classList.remove('shrink');
+	  }
+  };
+</script>
+
+<div id="navbar" class="navbar fixed min-h-[100px] duration-300 bg-neutral">
     <div class="navbar-start">
         <div class="dropdown">
             <label tabindex="0" class="btn btn-ghost lg:hidden">
@@ -36,7 +53,7 @@
         <a class="btn btn-ghost normal-case text-xl" href="/{{ lang }}/">
             <h1>{{ site.title }}</h1>
         </a>
-        <ul class="menu menu-horizontal px-1 invisible lg:visible">
+        <ul class="menu menu-lg menu-horizontal px-1 invisible lg:visible">
             {% for item in nav.items %}
                 {% if item.link == "#portfolio" %}
                     <li tabindex="0">

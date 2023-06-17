@@ -1,9 +1,6 @@
 <!DOCTYPE html>
-{% if page | get(key="lang", default="") %}
-<html lang="{{ page | get(key='lang', default='') }}">
-{% else %}
-<html lang="en">
-{% endif %}
+
+<html data-theme="luxury" class="h-full" {% if page | get(key="lang", default="") %}lang="{{ page | get(key='lang', default='') }}"{% else %}lang="en"{% endif %}>
 
 <head>
     <meta charset="utf-8">
@@ -32,16 +29,35 @@
         <link rel="alternate" hreflang="ro" href="{{ site.url }}{{ page.ro_url }}" />
     {% endif %}
 
+    <style>
+        @font-face {
+            font-family: 'Roboto';
+            src: url('/assets/fonts/roboto.woff') format('woff'); /* Modern Browsers */
+            src: url('/assets/fonts/roboto.ttf') format('truetype'); /* Safari, Android, iOS */
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }
+    </style>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@3.0.2/dist/full.css" rel="stylesheet" type="text/css" />
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                fontFamily: {
+                    'roboto': ["Roboto", "sans-serif"],
+                }
+            }
+        }
+    </script>
 
     <link rel="icon" sizes="any" type="image/png" href="/assets/images/icons/icon-32.png">
     <link rel="apple-touch-icon" href="/assets/images/icons/icon-180.png">
     <link rel="manifest" href="/manifest.webmanifest">
 </head>
 
-<body class="overflow-x-hidden">
-    <div>
+<body class="font-roboto overflow-x-hidden h-full">
+    <div class="flex flex-col justify-start min-h-screen">
         {% include "includes/navbar.html" %}
 
         <div class="flex items-center justify-center">
@@ -50,7 +66,6 @@
         </div>
 
         {% include "includes/footer.html" %}
-
     </div>
 </body>
 
