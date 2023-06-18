@@ -783,14 +783,13 @@ fn load_pages(
         }
 
         let resource_path = if front_matter.get("permalink").is_some() {
-            front_matter
-                .get("permalink")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .strip_suffix('/')
-                .unwrap()
-                .to_string()
+            let permalink = front_matter.get("permalink").unwrap().as_str().unwrap();
+            if permalink.ends_with('/') {
+                // TODO: we might want to make this configurable
+                permalink.strip_suffix('/').unwrap().to_string()
+            } else {
+                permalink.to_string()
+            }
         } else {
             path_str
                 .strip_prefix(site_prefix.as_str())
