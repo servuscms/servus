@@ -1,0 +1,27 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Compile
+      id: compile
+      uses: rust-build/rust-build.action@v1.4.3
+      with:
+        RUSTTARGET: x86_64-unknown-linux-musl
+        UPLOAD_MODE: none
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: Binary
+        path: |
+          ${{ steps.compile.outputs.BUILT_ARCHIVE }}
+          ${{ steps.compile.outputs.BUILT_CHECKSUM }}
