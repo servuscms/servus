@@ -22,10 +22,6 @@ use yaml_front_matter::YamlFrontMatter;
 
 mod nostr;
 
-mod default_theme {
-    include!(concat!(env!("OUT_DIR"), "/themes.rs"));
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 struct ServusMetadata {
     version: String,
@@ -78,28 +74,21 @@ struct State {
     sites: HashMap<String, SiteState>,
 }
 
-fn get_site_for_request(request: &Request<State>) -> &SiteState {
+fn get_site_for_request(request: &Request<State>) -> Option<&SiteState> {
     let state = &request.state();
-    let host = match request.host() {
-        Some(host) => {
-            if state.sites.contains_key(host) {
-                host.to_string()
-            } else if host.contains(':') {
-                let re = Regex::new(r":\d+").unwrap();
-                let portless = re.replace(host, "").to_string();
-                if state.sites.contains_key(&portless) {
-                    portless
-                } else {
-                    "default".to_string()
-                }
-            } else {
-                "default".to_string()
+    if let Some(host) = request.host() {
+        if state.sites.contains_key(host) {
+            return Some(&state.sites[&host.to_string()]);
+        } else if host.contains(':') {
+            let re = Regex::new(r":\d+").unwrap();
+            let portless = re.replace(host, "").to_string();
+            if state.sites.contains_key(&portless) {
+                return Some(&state.sites[&portless]);
             }
         }
-        _ => "default".to_string(),
     };
 
-    &state.sites[&host]
+    None
 }
 
 fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
@@ -255,7 +244,10 @@ async fn main() -> Result<(), std::io::Error> {
     app.at("/")
         .with(WebSocket::new(
             |request: Request<State>, mut ws| async move {
-                let site_state = get_site_for_request(&request);
+                let site_state = match get_site_for_request(&request) {
+                    Some(s) => s,
+                    _ => return Ok(()),
+                };
                 while let Some(Ok(Message::Text(message))) = ws.next().await {
                     let parsed: nostr::Message = serde_json::from_str(&message).unwrap();
                     match parsed {
@@ -362,7 +354,10 @@ async fn main() -> Result<(), std::io::Error> {
             },
         ))
         .get(|request: Request<State>| async move {
-            let site_state = get_site_for_request(&request);
+            let site_state = match get_site_for_request(&request) {
+                Some(s) => s,
+                _ => return Ok(Response::new(404)),
+            };
             let resource_path = "/index".to_string();
             {
                 let site_resources = site_state.resources.read().unwrap();
@@ -384,7 +379,10 @@ async fn main() -> Result<(), std::io::Error> {
             Ok(render_and_build_response(site_state, resource_path))
         });
     app.at("*path").get(|request: Request<State>| async move {
-        let site_state = get_site_for_request(&request);
+        let site_state = match get_site_for_request(&request) {
+            Some(s) => s,
+            _ => return Ok(Response::new(404)),
+        };
         let mut path = request.param("path").unwrap();
         if path.ends_with('/') {
             path = path.strip_suffix('/').unwrap();
@@ -458,24 +456,21 @@ async fn main() -> Result<(), std::io::Error> {
     let bind_to = format!("{addr}:{port}");
 
     if ssl {
-        let domains: Vec<String> = sites.keys().filter(|&x| x != "default").cloned().collect();
         let cache = DirCache::new("./cache");
-        let mut acme_config = AcmeConfig::new(domains)
+        let mut acme_config = AcmeConfig::new(sites.keys())
             .cache(cache)
             .directory_lets_encrypt(production_cert);
-        for (domain, site_state) in sites {
-            if domain != "default" {
-                let mut contact: String = "mailto:".to_owned();
-                contact.push_str(
-                    site_state
-                        .site
-                        .get("contact_email")
-                        .unwrap()
-                        .as_str()
-                        .unwrap(),
-                );
-                acme_config = acme_config.contact_push(contact);
-            }
+        for site_state in sites.values() {
+            let mut contact: String = "mailto:".to_owned();
+            contact.push_str(
+                site_state
+                    .site
+                    .get("contact_email")
+                    .unwrap()
+                    .as_str()
+                    .unwrap(),
+            );
+            acme_config = acme_config.contact_push(contact);
         }
 
         app.listen(
@@ -492,20 +487,13 @@ async fn main() -> Result<(), std::io::Error> {
 }
 
 fn get_sites() -> HashMap<String, SiteState> {
-    let mut paths = match fs::read_dir("./sites") {
+    let paths = match fs::read_dir("./sites") {
         Ok(paths) => paths.map(|r| r.unwrap()).collect(),
         _ => vec![],
     };
 
     if paths.is_empty() {
-        println!("No sites found! Generating default site...");
-
-        default_theme::generate("./sites/default");
-
-        paths = fs::read_dir("./sites")
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
+        panic!("No sites found!");
     }
 
     let mut sites = HashMap::new();
@@ -578,7 +566,7 @@ fn get_sites() -> HashMap<String, SiteState> {
 fn get_post_url(site: &toml::Value, slug: &str) -> String {
     site.get("post_permalink").map_or_else(
         || format!("/posts/{}", &slug),
-        |p| p.as_str().unwrap().replace(":slug", &slug),
+        |p| p.as_str().unwrap().replace(":slug", slug),
     )
 }
 
@@ -938,7 +926,6 @@ fn load_extra_resources(
 fn get_posts_list(resources: &HashMap<String, Resource>) -> Vec<&Resource> {
     let mut posts_list: Vec<&Resource> = resources
         .values()
-        .into_iter()
         .filter(|&r| r.resource_type == ResourceType::Post)
         .collect();
     posts_list.sort_by(|a, b| b.date.cmp(&a.date));
@@ -958,7 +945,7 @@ fn load_resources(
 
     let (pages, pages_content) = load_pages(site_path, site, site_data, tera, &posts_list);
 
-    let pages_list: Vec<&Resource> = pages.values().into_iter().collect();
+    let pages_list: Vec<&Resource> = pages.values().collect();
 
     let (extra, extra_content) =
         load_extra_resources(site_path, site, tera, &posts_list, &pages_list);
