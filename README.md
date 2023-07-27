@@ -22,7 +22,9 @@ It is worth mentioning, before you go any further with false expectations, that 
 
 ## Themes
 
-Not only there is no UI, but there are no usable themes included. A theme named `blank` exists, which is, like the name says, *blank*. No CSS or anything. It is just a directory structure with some plain HTML files that you can use to test your installation. Other themes are planned / WIP.
+Not only there is no UI, but there are no usable themes included.
+
+A separate repository named `themes` exists, but it is very much WIP.
 
 However, porting themes over from Jekyll should be pretty straight forward. There are a few changes required to match the directory structure required by *servus*, after which you will start getting errors from the templating engine, which you can solve pretty easily.
 

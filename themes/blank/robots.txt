@@ -1,2 +1,0 @@
-User-agent: *
-Sitemap: {{ site.url | safe}}/sitemap.xml
