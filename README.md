@@ -28,12 +28,15 @@ A separate repository named `themes` exists, but it is very much WIP.
 
 However, porting themes over from Jekyll should be pretty straight forward. There are a few changes required to match the directory structure required by *servus*, after which you will start getting errors from the templating engine, which you can solve pretty easily.
 
-## Usage
+## Building
 
 * `cargo build` - this builds the "debug" version
-* `./target/debug/servus dev` - this starts **servus** on port 4884
-
 * `cargo build --release` - this builds the "release" version
+* `docker run --rm -it -v "$PWD":/home/rust/src messense/rust-musl-cross:x86_64-musl cargo build --release` - this is an alternative way to build with musl
+
+## Usage
+
+* `./target/debug/servus dev` - this starts **servus** on port 4884
 * `sudo ./target/release/servus -c <contact_email> live` - this starts **servus** on port 443 (note the `sudo` required to bind to that port!) and obtains SSL certificates from Let's Encrypt using the <contact_email>
 
 NB: in order to obtain Let's Encrypt certificates you must be running Servus on a machine that is accessible via a public IP (such as a VPS) and have the domain name mapped to that machine's IP. Running the "live" version on your developement machine won't work because Let's Encrypt will try to actually connect to your domain and validate your setup.
