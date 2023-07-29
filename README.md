@@ -34,7 +34,7 @@ However, porting themes over from Jekyll should be pretty straight forward. Ther
 * `./target/debug/servus dev` - this starts **servus** on port 4884
 
 * `cargo build --release` - this builds the "release" version
-* `sudo ./target/release/servus live` - this starts **servus** on port 443 (note the `sudo` required to bind to that port!) and obtains SSL certificates from Let's Encrypt
+* `sudo ./target/release/servus -c <contact_email> live` - this starts **servus** on port 443 (note the `sudo` required to bind to that port!) and obtains SSL certificates from Let's Encrypt using the <contact_email>
 
 NB: in order to obtain Let's Encrypt certificates you must be running Servus on a machine that is accessible via a public IP (such as a VPS) and have the domain name mapped to that machine's IP. Running the "live" version on your developement machine won't work because Let's Encrypt will try to actually connect to your domain and validate your setup.
 
@@ -89,8 +89,6 @@ Other files are considered "raw" and sent to the clients as they are.
 ## _config.toml
 
 Every site needs a config file which has one section named `site`.
-
-The only required property is `contact_email`, which is used for requesting certificates from Let's Encrypt.
 
 All properties present under `[site]` are passed directly to the templates: `title` becomes `site.title`, `url` becomes `site.url`, etc.
 

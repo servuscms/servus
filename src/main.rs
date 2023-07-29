@@ -1,5 +1,6 @@
 use async_std::prelude::*;
 use chrono::{NaiveDate, NaiveDateTime};
+use clap::Parser;
 use http_types::mime;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,21 @@ use walkdir::{DirEntry, WalkDir};
 use yaml_front_matter::YamlFrontMatter;
 
 mod nostr;
+
+#[derive(clap::ValueEnum, Clone)]
+pub enum Mode {
+    Dev,
+    Live,
+}
+
+#[derive(Parser)]
+struct Cli {
+    #[clap(short, long)]
+    contact_email: Option<String>,
+
+    #[clap(value_enum)]
+    mode: Mode,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ServusMetadata {
@@ -232,6 +248,8 @@ fn render_and_build_response(site_state: &SiteState, resource_path: String) -> R
 
 #[async_std::main]
 async fn main() -> Result<(), std::io::Error> {
+    let args = Cli::parse();
+
     femme::with_level(log::LevelFilter::Info);
 
     let sites = get_sites();
@@ -426,28 +444,21 @@ async fn main() -> Result<(), std::io::Error> {
     let mut dev_mode = false;
     let mut production_cert = false; // default to staging
 
-    let args: Vec<_> = env::args().collect();
-    if args.len() > 1 {
-        let mode = args[1].as_str();
-        match mode {
-            "dev" => {
-                port = 4884;
-                ssl = false;
-                dev_mode = true;
-            }
-            "live" => {
-                production_cert = true;
-            }
-            _ => {
-                panic!("Valid modes are 'dev' and 'live'.");
-            }
+    match args.mode {
+        Mode::Dev => {
+            port = 4884;
+            ssl = false;
+            dev_mode = true;
+        }
+        Mode::Live => {
+            production_cert = true;
         }
     }
 
     if dev_mode {
         println!("Open http://localhost:{} in your browser!", port);
     } else {
-        println!("Running on port {} using SSL={}", port, ssl);
+        println!("Running on port {}", port);
         if !production_cert {
             println!("Using Let's Encrypt staging environment. Great for testing, but browsers will complain about the certificate.");
         }
@@ -456,22 +467,15 @@ async fn main() -> Result<(), std::io::Error> {
     let bind_to = format!("{addr}:{port}");
 
     if ssl {
-        let cache = DirCache::new("./cache");
-        let mut acme_config = AcmeConfig::new(sites.keys())
-            .cache(cache)
-            .directory_lets_encrypt(production_cert);
-        for site_state in sites.values() {
-            let mut contact: String = "mailto:".to_owned();
-            contact.push_str(
-                site_state
-                    .site
-                    .get("contact_email")
-                    .unwrap()
-                    .as_str()
-                    .unwrap(),
-            );
-            acme_config = acme_config.contact_push(contact);
+        if args.contact_email.is_none() {
+            panic!("Use -c to provide a contact email!");
         }
+
+        let cache = DirCache::new("./cache");
+        let acme_config = AcmeConfig::new(sites.keys())
+            .cache(cache)
+            .directory_lets_encrypt(production_cert)
+            .contact_push(format!("mailto:{}", args.contact_email.unwrap()));
 
         app.listen(
             tide_rustls::TlsListener::build()
