@@ -2,7 +2,6 @@ use async_std::prelude::*;
 use chrono::{NaiveDate, NaiveDateTime};
 use clap::Parser;
 use http_types::mime;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -14,10 +13,10 @@ use std::{
     str::FromStr,
     sync::{Arc, RwLock},
 };
-use tide::{log, Redirect, Request, Response};
+use tide::{http::StatusCode, log, Redirect, Request, Response};
 use tide_acme::rustls_acme::caches::DirCache;
 use tide_acme::{AcmeConfig, TideRustlsExt};
-use tide_websockets::{Message, WebSocket};
+use tide_websockets::{Message, WebSocket, WebSocketConnection};
 use walkdir::{DirEntry, WalkDir};
 use yaml_front_matter::YamlFrontMatter;
 
@@ -31,6 +30,9 @@ pub enum Mode {
 
 #[derive(Parser)]
 struct Cli {
+    #[clap(short, long)]
+    api_domain: Option<String>,
+
     #[clap(short, long)]
     contact_email: Option<String>,
 
@@ -87,24 +89,14 @@ struct SiteState {
 
 #[derive(Clone)]
 struct State {
-    sites: HashMap<String, SiteState>,
+    api_domain: Option<String>,
+    sites: Arc<RwLock<HashMap<String, SiteState>>>,
 }
 
-fn get_site_for_request(request: &Request<State>) -> Option<&SiteState> {
-    let state = &request.state();
-    if let Some(host) = request.host() {
-        if state.sites.contains_key(host) {
-            return Some(&state.sites[&host.to_string()]);
-        } else if host.contains(':') {
-            let re = Regex::new(r":\d+").unwrap();
-            let portless = re.replace(host, "").to_string();
-            if state.sites.contains_key(&portless) {
-                return Some(&state.sites[&portless]);
-            }
-        }
-    };
-
-    None
+#[derive(Deserialize, Serialize)]
+struct Site {
+    subdomain: String,
+    pubkey: String,
 }
 
 fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
@@ -204,7 +196,7 @@ fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
 fn build_response(resource: &Resource, content: &Content) -> Response {
     let mime = mime::Mime::from_str(resource.mime.as_str()).unwrap();
 
-    Response::builder(200)
+    Response::builder(StatusCode::Ok)
         .content_type(mime)
         .header("Access-Control-Allow-Origin", "*")
         .body(&*content.content.as_ref().unwrap().clone())
@@ -239,11 +231,274 @@ fn render_and_build_response(site_state: &SiteState, resource_path: String) -> R
         content.content = Some(rendered_content.to_owned());
     }
 
-    Response::builder(200)
+    Response::builder(StatusCode::Ok)
         .content_type(mime::Mime::from_str(resource.mime.as_str()).unwrap())
         .header("Access-Control-Allow-Origin", "*")
         .body(&*rendered_content)
         .build()
+}
+
+async fn handle_websocket(
+    request: Request<State>,
+    mut ws: WebSocketConnection,
+) -> tide::Result<()> {
+    while let Some(Ok(Message::Text(message))) = ws.next().await {
+        let parsed: nostr::Message = serde_json::from_str(&message).unwrap();
+        match parsed {
+            nostr::Message::Event(cmd) => {
+                {
+                    let host = request.host().unwrap().to_string();
+                    let sites = request.state().sites.read().unwrap();
+                    if !sites.contains_key(&host) {
+                        return Ok(());
+                    }
+                    if let Some(site_pubkey) = sites.get(&host).unwrap().site.get("pubkey") {
+                        if cmd.event.pubkey != site_pubkey.as_str().unwrap() {
+                            log::info!("Ignoring event for unknown pubkey: {}.", cmd.event.pubkey);
+                            continue;
+                        }
+                    } else {
+                        log::info!("Ignoring event because site has no pubkey.");
+                        continue;
+                    }
+                }
+
+                if cmd.event.validate_sig().is_err() {
+                    log::info!("Ignoring invalid event.");
+                    continue;
+                }
+
+                if cmd.event.kind == 30023 {
+                    {
+                        let host = request.host().unwrap().to_string();
+                        let sites = request.state().sites.read().unwrap();
+                        if !sites.contains_key(&host) {
+                            return Ok(());
+                        }
+                        add_post_from_nostr(sites.get(&host).unwrap(), &cmd.event);
+                    }
+                    ws.send_json(&json!(vec![
+                        serde_json::Value::String("OK".to_string()),
+                        serde_json::Value::String(cmd.event.id.to_string()),
+                        serde_json::Value::Bool(true),
+                        serde_json::Value::String("".to_string())
+                    ]))
+                    .await
+                    .unwrap();
+                } else {
+                    log::info!("Ignoring event of unknown kind: {}.", cmd.event.kind);
+                    continue;
+                }
+            }
+            nostr::Message::Req(cmd) => {
+                let mut posts_subscription: Option<String> = None;
+                for (filter_by, filter) in &cmd.filter.extra {
+                    if filter_by != "kinds" {
+                        log::info!("Ignoring unknown filter: {}.", filter_by);
+                        continue;
+                    }
+                    let filter_values = filter
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|f| f.as_u64().unwrap())
+                        .collect::<Vec<u64>>();
+                    if filter_values.contains(&30023) {
+                        posts_subscription = Some(cmd.subscription_id.to_owned());
+                    } else {
+                        log::info!(
+                            "Ignoring subscription for unknown kinds: {}.",
+                            filter_values
+                                .iter()
+                                .map(|f| f.to_string())
+                                .collect::<Vec<String>>()
+                                .join(", ")
+                        );
+                        continue;
+                    }
+                }
+                if let Some(subscription_id) = posts_subscription {
+                    let mut events: Vec<String> = vec![];
+                    {
+                        let host = request.host().unwrap().to_string();
+                        let sites = request.state().sites.read().unwrap();
+                        if !sites.contains_key(&host) {
+                            return Ok(());
+                        };
+                        let site_resources = sites.get(&host).unwrap().resources.read().unwrap();
+                        for post in get_posts_list(&site_resources) {
+                            let mut path = PathBuf::from(&post.path);
+                            path.set_extension("json");
+                            if let Ok(json) = fs::read_to_string(&path) {
+                                events.push(json);
+                            }
+                        }
+                    }
+
+                    for event in &events {
+                        ws.send_json(&json!(vec!["EVENT", &subscription_id, event]))
+                            .await
+                            .unwrap();
+                    }
+                    ws.send_json(&json!(vec!["EOSE", &subscription_id]))
+                        .await
+                        .unwrap();
+
+                    log::info!(
+                        "Sent {} events back for subscription {}.",
+                        events.len(),
+                        subscription_id
+                    );
+
+                    // TODO: At this point we should save the subscription and notify this client later if other posts appear.
+                    // For that, we probably need to introduce a dispatcher thread.
+                    // See: https://stackoverflow.com/questions/35673702/chat-using-rust-websocket/35785414#35785414
+                }
+            }
+            nostr::Message::Close(_cmd) => {
+                // Nothing to do here, since we don't actually store subscriptions!
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_index(request: Request<State>) -> tide::Result<Response> {
+    let host = request.host().unwrap().to_string();
+    let sites = request.state().sites.read().unwrap();
+    let site_state = if sites.contains_key(&host) {
+        sites.get(&host).unwrap()
+    } else {
+        return Ok(Response::new(StatusCode::NotFound));
+    };
+    let resource_path = "/index".to_string();
+    {
+        let site_resources = site_state.resources.read().unwrap();
+        let site_content = site_state.content.read().unwrap();
+        match site_resources.get(&resource_path) {
+            Some(resource) => {
+                if resource.redirect_to.is_some() {
+                    return Ok(Redirect::new(resource.redirect_to.as_ref().unwrap()).into());
+                }
+                let content = site_content.get(&resource_path).unwrap();
+                if content.content.is_some() {
+                    return Ok(build_response(resource, content));
+                }
+            }
+            None => return Ok(Response::new(StatusCode::NotFound)),
+        }
+    }
+
+    Ok(render_and_build_response(site_state, resource_path))
+}
+
+async fn handle_get(request: Request<State>) -> tide::Result<Response> {
+    let mut path = request.param("path").unwrap();
+    if path.ends_with('/') {
+        path = path.strip_suffix('/').unwrap();
+    }
+
+    let host = request.host().unwrap().to_string();
+    let sites = request.state().sites.read().unwrap();
+    let site_state = if sites.contains_key(&host) {
+        sites.get(&host).unwrap()
+    } else {
+        return Ok(Response::new(StatusCode::NotFound));
+    };
+
+    let mut resource_path;
+    {
+        let site_resources = site_state.resources.read().unwrap();
+        let site_content = site_state.content.read().unwrap();
+        resource_path = format!("/{}", &path);
+        match site_resources.get(&resource_path) {
+            Some(resource) => {
+                if resource.redirect_to.is_some() {
+                    return Ok(Redirect::new(resource.redirect_to.as_ref().unwrap()).into());
+                }
+                let content = site_content.get(&resource_path).unwrap();
+                if content.content.is_some() {
+                    return Ok(build_response(resource, content));
+                }
+            }
+            None => {
+                resource_path = format!("/{}/index", &path);
+                match site_resources.get(&resource_path) {
+                    Some(resource) => {
+                        let content = site_content.get(&resource_path).unwrap();
+                        if content.content.is_some() {
+                            return Ok(build_response(resource, content));
+                        }
+                    }
+                    None => return Ok(Response::new(StatusCode::NotFound)),
+                };
+            }
+        }
+    }
+
+    Ok(render_and_build_response(site_state, resource_path))
+}
+
+async fn handle_api(mut request: Request<State>) -> tide::Result<Response> {
+    let site: Site = request.body_json().await.unwrap();
+    let state = &request.state();
+
+    if state.api_domain.is_none() {
+        return Ok(Response::builder(StatusCode::NotFound).build());
+    }
+
+    let api_domain = state.api_domain.to_owned().unwrap();
+
+    if *request.host().unwrap() != api_domain {
+        return Ok(Response::builder(StatusCode::NotFound).build());
+    }
+
+    if site.subdomain.contains('.') {
+        return Ok(Response::builder(StatusCode::BadRequest)
+            .content_type(mime::JSON)
+            .body("{'message': 'Invalid subdomain.'}")
+            .build());
+    }
+
+    let new_site = format!("{}.{}", site.subdomain, api_domain);
+    if state.sites.read().unwrap().contains_key(&new_site) {
+        Ok(Response::builder(StatusCode::Conflict).build())
+    } else {
+        let path = format!("./sites/{}", new_site);
+        fs::create_dir_all(&path).unwrap();
+        fs::create_dir_all(format!("./sites/{}/_posts", new_site)).unwrap();
+
+        let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
+        tera.autoescape_on(vec![]);
+
+        let config_content = format!("[site]\npubkey = \"{}\"", site.pubkey);
+        fs::write(
+            format!("./sites/{}/_config.toml", new_site),
+            &config_content,
+        )
+        .unwrap();
+
+        let config: HashMap<String, toml::Value> = toml::from_str(&config_content).unwrap();
+        let site_config = config.get("site").unwrap();
+
+        let sites = &mut state.sites.write().unwrap();
+        sites.insert(
+            new_site,
+            SiteState {
+                site: site_config.clone(),
+                path,
+                site_data: HashMap::new(),
+                resources: Arc::new(RwLock::new(HashMap::new())),
+                content: Arc::new(RwLock::new(HashMap::new())),
+                tera: Arc::new(RwLock::new(tera)),
+            },
+        );
+        Ok(Response::builder(StatusCode::Ok)
+            .content_type(mime::JSON)
+            .header("Access-Control-Allow-Origin", "*")
+            .body("{}")
+            .build())
+    }
 }
 
 #[async_std::main]
@@ -252,191 +507,18 @@ async fn main() -> Result<(), std::io::Error> {
 
     femme::with_level(log::LevelFilter::Info);
 
-    let sites = get_sites();
-
     let mut app = tide::with_state(State {
-        sites: sites.clone(),
+        api_domain: args.api_domain.clone(),
+        sites: Arc::new(RwLock::new(get_sites())),
     });
+
     app.with(log::LogMiddleware::new());
-
-    app.at("/")
-        .with(WebSocket::new(
-            |request: Request<State>, mut ws| async move {
-                let site_state = match get_site_for_request(&request) {
-                    Some(s) => s,
-                    _ => return Ok(()),
-                };
-                while let Some(Ok(Message::Text(message))) = ws.next().await {
-                    let parsed: nostr::Message = serde_json::from_str(&message).unwrap();
-                    match parsed {
-                        nostr::Message::Event(cmd) => {
-                            if let Some(site_pubkey) = site_state.site.get("pubkey") {
-                                if cmd.event.pubkey != site_pubkey.as_str().unwrap() {
-                                    log::info!(
-                                        "Ignoring event for unknown pubkey: {}.",
-                                        cmd.event.pubkey
-                                    );
-                                    continue;
-                                }
-                            } else {
-                                log::info!("Ignoring event because site has no pubkey.");
-                                continue;
-                            }
-
-                            if cmd.event.validate_sig().is_err() {
-                                log::info!("Ignoring invalid event.");
-                                continue;
-                            }
-
-                            if cmd.event.kind == 30023 {
-                                add_post_from_nostr(site_state, &cmd.event);
-                                ws.send_json(&json!(vec![
-                                    serde_json::Value::String("OK".to_string()),
-                                    serde_json::Value::String(cmd.event.id.to_string()),
-                                    serde_json::Value::Bool(true),
-                                    serde_json::Value::String("".to_string())
-                                ]))
-                                .await
-                                .unwrap();
-                            } else {
-                                log::info!("Ignoring event of unknown kind: {}.", cmd.event.kind);
-                                continue;
-                            }
-                        }
-                        nostr::Message::Req(cmd) => {
-                            let mut posts_subscription: Option<String> = None;
-                            for (filter_by, filter) in &cmd.filter.extra {
-                                if filter_by != "kinds" {
-                                    log::info!("Ignoring unknown filter: {}.", filter_by);
-                                    continue;
-                                }
-                                let filter_values = filter
-                                    .as_array()
-                                    .unwrap()
-                                    .iter()
-                                    .map(|f| f.as_u64().unwrap())
-                                    .collect::<Vec<u64>>();
-                                if filter_values.contains(&30023) {
-                                    posts_subscription = Some(cmd.subscription_id.to_owned());
-                                } else {
-                                    log::info!(
-                                        "Ignoring subscription for unknown kinds: {}.",
-                                        filter_values
-                                            .iter()
-                                            .map(|f| f.to_string())
-                                            .collect::<Vec<String>>()
-                                            .join(", ")
-                                    );
-                                    continue;
-                                }
-                            }
-                            if let Some(subscription_id) = posts_subscription {
-                                let mut events: Vec<String> = vec![];
-                                {
-                                    let site_resources = site_state.resources.read().unwrap();
-                                    for post in get_posts_list(&site_resources) {
-                                        let mut path = PathBuf::from(&post.path);
-                                        path.set_extension("json");
-                                        if let Ok(json) = fs::read_to_string(&path) {
-                                            events.push(json);
-                                        }
-                                    }
-                                }
-
-                                for event in &events {
-                                    ws.send_json(&json!(vec!["EVENT", &subscription_id, event]))
-                                        .await
-                                        .unwrap();
-                                }
-                                ws.send_json(&json!(vec!["EOSE", &subscription_id]))
-                                    .await
-                                    .unwrap();
-
-                                log::info!(
-                                    "Sent {} events back for subscription {}.",
-                                    events.len(),
-                                    subscription_id
-                                );
-
-                                // TODO: At this point we should save the subscription and notify this client later if other posts appear.
-                                // For that, we probably need to introduce a dispatcher thread.
-                                // See: https://stackoverflow.com/questions/35673702/chat-using-rust-websocket/35785414#35785414
-                            }
-                        }
-                        nostr::Message::Close(_cmd) => {
-                            // Nothing to do here, since we don't actually store subscriptions!
-                        }
-                    }
-                }
-                Ok(())
-            },
-        ))
-        .get(|request: Request<State>| async move {
-            let site_state = match get_site_for_request(&request) {
-                Some(s) => s,
-                _ => return Ok(Response::new(404)),
-            };
-            let resource_path = "/index".to_string();
-            {
-                let site_resources = site_state.resources.read().unwrap();
-                let site_content = site_state.content.read().unwrap();
-                match site_resources.get(&resource_path) {
-                    Some(resource) => {
-                        if resource.redirect_to.is_some() {
-                            return Ok(Redirect::new(resource.redirect_to.as_ref().unwrap()).into());
-                        }
-                        let content = site_content.get(&resource_path).unwrap();
-                        if content.content.is_some() {
-                            return Ok(build_response(resource, content));
-                        }
-                    }
-                    None => return Ok(Response::new(404)),
-                }
-            }
-
-            Ok(render_and_build_response(site_state, resource_path))
-        });
-    app.at("*path").get(|request: Request<State>| async move {
-        let site_state = match get_site_for_request(&request) {
-            Some(s) => s,
-            _ => return Ok(Response::new(404)),
-        };
-        let mut path = request.param("path").unwrap();
-        if path.ends_with('/') {
-            path = path.strip_suffix('/').unwrap();
-        }
-        let mut resource_path;
-        {
-            let site_resources = site_state.resources.read().unwrap();
-            let site_content = site_state.content.read().unwrap();
-            resource_path = format!("/{}", &path);
-            match site_resources.get(&resource_path) {
-                Some(resource) => {
-                    if resource.redirect_to.is_some() {
-                        return Ok(Redirect::new(resource.redirect_to.as_ref().unwrap()).into());
-                    }
-                    let content = site_content.get(&resource_path).unwrap();
-                    if content.content.is_some() {
-                        return Ok(build_response(resource, content));
-                    }
-                }
-                None => {
-                    resource_path = format!("/{}/index", &path);
-                    match site_resources.get(&resource_path) {
-                        Some(resource) => {
-                            let content = site_content.get(&resource_path).unwrap();
-                            if content.content.is_some() {
-                                return Ok(build_response(resource, content));
-                            }
-                        }
-                        None => return Ok(Response::new(404)),
-                    };
-                }
-            }
-        }
-
-        Ok(render_and_build_response(site_state, resource_path))
-    });
+    app.at("/").with(WebSocket::new(handle_websocket));
+    app.at("/").get(handle_index);
+    app.at("*path").get(handle_get);
+    if args.api_domain.is_some() {
+        app.at("/api/sites").post(handle_api);
+    }
 
     let addr = "0.0.0.0";
     let mut port = 443;
@@ -471,8 +553,19 @@ async fn main() -> Result<(), std::io::Error> {
             panic!("Use -c to provide a contact email!");
         }
 
+        let mut domains: Vec<String> = app
+            .state()
+            .sites
+            .read()
+            .unwrap()
+            .keys()
+            .map(|x| x.to_string())
+            .collect();
+        if args.api_domain.is_some() {
+            domains.push(args.api_domain.unwrap());
+        }
         let cache = DirCache::new("./cache");
-        let acme_config = AcmeConfig::new(sites.keys())
+        let acme_config = AcmeConfig::new(domains)
             .cache(cache)
             .directory_lets_encrypt(production_cert)
             .contact_push(format!("mailto:{}", args.contact_email.unwrap()));
@@ -495,10 +588,6 @@ fn get_sites() -> HashMap<String, SiteState> {
         Ok(paths) => paths.map(|r| r.unwrap()).collect(),
         _ => vec![],
     };
-
-    if paths.is_empty() {
-        panic!("No sites found!");
-    }
 
     let mut sites = HashMap::new();
     for path in &paths {

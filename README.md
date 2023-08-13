@@ -135,6 +135,16 @@ The Nostr protocol can be used for posting and retrieving posts, so you can use 
 
 You can also use **servus** without Nostr in a similar way you would use Jekyll, by just editing the `.md` files under `_posts` manually, but since these files would not include a signature, they won't be returned to Nostr clients because the verification would fail would fail anyway.
 
+## REST API
+
+A simple REST API exists that can be used to create new sites. In order to activate the API, you need to pass `--api-domain <API_DOMAIN>`. Servus will listen to that domain for API requests.
+
+### `/api/sites`
+
+A POST to `https://<API_DOMAIN>/api/sites` can be used to add new sites, which have to be subdomains of API_DOMAIN and need to have a `pubkey` associated.
+
+Example: `curl -X POST -H "Content-Type: application/json" -d '{"subdomain": "hello", "pubkey": "f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6"}' https://servus.page/api/sites` will create a site named `hello.servus.page` to which you can then post using Nostr events from the provided pubkey.
+
 ## Any questions?
 
 If you read this far without giving up and still want to try it yourself, feel free to open GitHub issues with any problems you encounter and I'll try to help. I currently use *servus* to run two live sites, but it is probably not for everyone, yet...
