@@ -62,7 +62,10 @@ However, porting themes over from Jekyll should be pretty straight forward. Ther
 ## Usage
 
 * `./target/debug/servus dev` - this starts **Servus** on port 4884
-* `sudo ./target/release/servus -c <contact_email> live` - this starts **Servus** on port 443 (note the `sudo` required to bind to that port!) and obtains SSL certificates from Let's Encrypt using the <contact_email>
+* `sudo ./target/release/servus -s -e <contact_email> live` - this starts **Servus** on port 443 and obtains SSL certificates from Let's Encrypt using ACME by providing `<contact_email>`
+* `sudo ./target/release/servus -c <SSL_CERT_FILE> -k <SSL_KEY> live` - this starts **Servus** on port 443 using the provided `<SSL_CERT>` and `<SSL_KEY>`
+
+Note the `sudo` required to bind to port 443!
 
 NB: in order to obtain Let's Encrypt certificates you must be running Servus on a machine that is accessible via a public IP (such as a VPS) and have the domain name mapped to that machine's IP. Running the "live" version on your developement machine won't work because Let's Encrypt will try to actually connect to your domain and validate your setup.
 
