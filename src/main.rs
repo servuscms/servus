@@ -33,8 +33,17 @@ struct Cli {
     #[clap(short, long)]
     api_domain: Option<String>,
 
-    #[clap(short, long)]
+    #[clap(short('e'), long)]
     contact_email: Option<String>,
+
+    #[clap(short('c'), long)]
+    ssl_cert: Option<String>,
+
+    #[clap(short('k'), long)]
+    ssl_key: Option<String>,
+
+    #[clap(short('s'), long)]
+    ssl_acme: bool,
 
     #[clap(value_enum)]
     mode: Mode,
@@ -549,33 +558,36 @@ async fn main() -> Result<(), std::io::Error> {
     let bind_to = format!("{addr}:{port}");
 
     if ssl {
-        if args.contact_email.is_none() {
-            panic!("Use -c to provide a contact email!");
-        }
-
-        let mut domains: Vec<String> = app
-            .state()
-            .sites
-            .read()
-            .unwrap()
-            .keys()
-            .map(|x| x.to_string())
-            .collect();
-        if args.api_domain.is_some() {
-            domains.push(args.api_domain.unwrap());
-        }
-        let cache = DirCache::new("./cache");
-        let acme_config = AcmeConfig::new(domains)
-            .cache(cache)
-            .directory_lets_encrypt(production_cert)
-            .contact_push(format!("mailto:{}", args.contact_email.unwrap()));
-
-        app.listen(
-            tide_rustls::TlsListener::build()
-                .addrs(bind_to)
-                .acme(acme_config),
-        )
-        .await?;
+        let mut listener = tide_rustls::TlsListener::build().addrs(bind_to);
+        listener = if args.ssl_cert.is_some() && args.ssl_key.is_some() {
+            listener
+                .cert(args.ssl_cert.unwrap())
+                .key(args.ssl_key.unwrap())
+        } else if args.ssl_acme {
+            if args.contact_email.is_none() {
+                panic!("Use -e to provide a contact email!");
+            }
+            let mut domains: Vec<String> = app
+                .state()
+                .sites
+                .read()
+                .unwrap()
+                .keys()
+                .map(|x| x.to_string())
+                .collect();
+            if args.api_domain.is_some() {
+                domains.push(args.api_domain.unwrap());
+            }
+            let cache = DirCache::new("./cache");
+            let acme_config = AcmeConfig::new(domains)
+                .cache(cache)
+                .directory_lets_encrypt(production_cert)
+                .contact_push(format!("mailto:{}", args.contact_email.unwrap()));
+            listener.acme(acme_config)
+        } else {
+            panic!("Pass either --ssh-cert and --ssl-key OR --ssl-acme");
+        };
+        app.listen(listener).await?;
     } else {
         app.listen(bind_to).await?;
     }
