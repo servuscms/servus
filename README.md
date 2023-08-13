@@ -67,13 +67,15 @@ However, porting themes over from Jekyll should be pretty straight forward. Ther
 
 Note the `sudo` required to bind to port 443!
 
-NB: in order to obtain Let's Encrypt certificates you must be running Servus on a machine that is accessible via a public IP (such as a VPS) and have the domain name mapped to that machine's IP. Running the "live" version on your developement machine won't work because Let's Encrypt will try to actually connect to your domain and validate your setup.
+NB: in order to obtain Let's Encrypt certificates you must be running Servus on a machine that is accessible via a public IP (such as a VPS) and have the domain name mapped to that machine's IP. Running the "live" version with `-s` on your developement machine won't work because Let's Encrypt will try to actually connect to your domain and validate your setup.
 
-However, there is a way to run the "live" version locally *if* you have already run it on your VPS and obtained the certificates. You can copy over the `cache` subdirectory, which includes the certificates, and you can even map `127.0.0.1` to your domain name from `/etc/hosts` to get a realistic simulation of the live environment on your local machine.
+You can try running the "live" version locally using a custom certificate by passing `-c` and `-k` like in the example above. Certificates can be obtained using [acme.sh](https://github.com/acmesh-official/acme.sh), but make sure you run `acme.sh --to-pkcs8` to convert the key to PKCS8 before you pass it to `Servus`.
+
+PS: you can map `127.0.0.1` to your domain name from `/etc/hosts` to get a realistic simulation of the live environment on your local machine!
 
 ## Directory structure
 
-You can run the **Servus** executable from any directory. On start, it looks for a directory named `sites` in the same directory as the executable, then loads all available "sites" that it finds in that directory. A "site" is identified by the domain name, which is passed by the browser using the [`Host` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/host) (minus the port). So a valid `sites` directory would look like this:
+You can run the **Servus** executable from any directory. On start, it looks for a directory named `sites` in the same directory as the executable, then loads all available "sites" that it finds in that directory. A "site" is identified by the domain name, which is passed by the browser using the [`Host` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/host). So a valid `sites` directory would look like this:
 
 ```
 .
