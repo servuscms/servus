@@ -105,7 +105,6 @@ struct State {
 #[derive(Deserialize, Serialize)]
 struct Site {
     subdomain: String,
-    pubkey: String,
 }
 
 fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
@@ -448,7 +447,7 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
     Ok(render_and_build_response(site_state, resource_path))
 }
 
-async fn handle_api(mut request: Request<State>) -> tide::Result<Response> {
+async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> {
     let site: Site = request.body_json().await.unwrap();
     let state = &request.state();
 
@@ -480,7 +479,8 @@ async fn handle_api(mut request: Request<State>) -> tide::Result<Response> {
         let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
         tera.autoescape_on(vec![]);
 
-        let config_content = format!("[site]\npubkey = \"{}\"", site.pubkey);
+        let key = request.param("key").unwrap();
+        let config_content = format!("[site]\npubkey = \"{}\"", key);
         fs::write(
             format!("./sites/{}/_config.toml", new_site),
             &config_content,
@@ -510,6 +510,27 @@ async fn handle_api(mut request: Request<State>) -> tide::Result<Response> {
     }
 }
 
+async fn handle_list_sites(request: Request<State>) -> tide::Result<Response> {
+    let key = request.param("key").unwrap();
+    let all_sites = &request.state().sites.read().unwrap();
+    let sites = all_sites
+        .iter()
+        .filter_map(|s| {
+            let pk = s.1.site.get("pubkey")?;
+            if pk.as_str().unwrap() == key {
+                Some(s.0)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Response::builder(StatusCode::Ok)
+        .content_type(mime::JSON)
+        .body(json!(sites).to_string())
+        .build())
+}
+
 #[async_std::main]
 async fn main() -> Result<(), std::io::Error> {
     let args = Cli::parse();
@@ -526,7 +547,8 @@ async fn main() -> Result<(), std::io::Error> {
     app.at("/").get(handle_index);
     app.at("*path").get(handle_get);
     if args.api_domain.is_some() {
-        app.at("/api/sites").post(handle_api);
+        app.at("/api/keys/:key/sites").post(handle_new_site);
+        app.at("/api/keys/:key/sites").get(handle_list_sites);
     }
 
     let addr = "0.0.0.0";

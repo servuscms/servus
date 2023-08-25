@@ -1,8 +1,6 @@
 # servus
 
-<p align="center">
-  <img src="https://servus.page/images/logo.png" width="256" title="Servus CMS">
-</p>
+![alt text](https://github.com/servuscms/servus.page/blob/master/images/logo.png?raw=true)
 
 ## About
 
@@ -33,6 +31,8 @@ In order to use it, you need at least some basic understanding of:
 
 You also need a VPS with SSH access where you would run **Servus** unless you are just curious and want to test it locally, which is doable, although a bit tricky due to the SSL certificates.
 
+Also keep in mind that everything changes all the time without prior notice, for now...
+
 ### UI
 
 It is worth mentioning, before you go any further with false expectations, that **Servus** has no UI at all. It is very much like Jekyll in this regard. If you are familiar with tools like Jekyll you will feel at home, otherwise it will make no sense at all.
@@ -62,8 +62,8 @@ However, porting themes over from Jekyll should be pretty straight forward. Ther
 ## Usage
 
 * `./target/debug/servus dev` - this starts **Servus** on port 4884
-* `sudo ./target/release/servus -s -e <contact_email> live` - this starts **Servus** on port 443 and obtains SSL certificates from Let's Encrypt using ACME by providing `<contact_email>`
-* `sudo ./target/release/servus -c <SSL_CERT_FILE> -k <SSL_KEY> live` - this starts **Servus** on port 443 using the provided `<SSL_CERT>` and `<SSL_KEY>`
+* `sudo ./target/release/servus --ssl-acme --contact-email <contact_email> live` - this starts **Servus** on port 443 and obtains SSL certificates from Let's Encrypt using ACME by providing `<contact_email>`
+* `sudo ./target/release/servus --ssl-cert <SSL_CERT_FILE> --ssl-key <SSL_KEY> live` - this starts **Servus** on port 443 using the provided `<SSL_CERT>` and `<SSL_KEY>`
 
 Note the `sudo` required to bind to port 443!
 
@@ -167,13 +167,19 @@ You can also use **Servus** without Nostr in a similar way you would use Jekyll,
 
 ## REST API
 
-A simple REST API exists that can be used to create new sites. In order to activate the API, you need to pass `--api-domain <API_DOMAIN>`. Servus will listen to that domain for API requests.
+A simple REST API exists that can be used to create new sites and list sites associated with a Nostr pubkey.
 
-### `/api/sites`
+In order to activate the API, you need to pass `--api-domain <API_DOMAIN>`. Servus will listen to that domain for API requests.
 
-A POST to `https://<API_DOMAIN>/api/sites` can be used to add new sites, which have to be subdomains of API_DOMAIN and need to have a `pubkey` associated.
+### `/api/keys/<key>/sites`
 
-Example: `curl -X POST -H "Content-Type: application/json" -d '{"subdomain": "hello", "pubkey": "f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6"}' https://servus.page/api/sites` will create a site named `hello.servus.page` to which you can then post using Nostr events from the provided pubkey.
+A POST to `https://<API_DOMAIN>/api/keys/<key>/sites` can be used to add new sites, which have to be subdomains of API_DOMAIN and will have a <key> as the associated Nostr `pubkey`.
+
+Example: `curl -X POST -H "Content-Type: application/json" -d '{"subdomain": "hello"}' https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will create a site named `hello.servus.page` to which you can then post using Nostr events signed with the corresponding private key.
+
+A GET to `https://<API_DOMAIN>/api/keys/<key>/sites` can be used to get a list of sites associated with <key>.
+
+Example: `curl https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will return `["hello.servus.page"]` (after the above POST has been executed).
 
 ## Any questions?
 
