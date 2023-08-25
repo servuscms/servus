@@ -1,8 +1,6 @@
 # servus
 
-<p align="center">
-  <img src="https://servus.page/images/logo.png" width="256" title="Servus CMS">
-</p>
+![alt text](https://github.com/servuscms/servus.page/blob/master/images/logo.png?raw=true)
 
 ## About
 
