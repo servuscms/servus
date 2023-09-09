@@ -543,8 +543,9 @@ async fn main() -> Result<(), std::io::Error> {
     });
 
     app.with(log::LogMiddleware::new());
-    app.at("/").with(WebSocket::new(handle_websocket));
-    app.at("/").get(handle_index);
+    app.at("/")
+        .with(WebSocket::new(handle_websocket))
+        .get(handle_index);
     app.at("*path").get(handle_get);
     if args.api_domain.is_some() {
         app.at("/api/keys/:key/sites").post(handle_new_site);
