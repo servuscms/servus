@@ -55,6 +55,18 @@ impl Event {
         }
     }
 
+    pub fn to_json(&self) -> serde_json::Value {
+        json!({
+            "id": self.id,
+            "pubkey": self.pubkey,
+            "created_at": self.created_at,
+            "kind": self.kind,
+            "tags": self.tags,
+            "content": self.content,
+            "sig": self.sig,
+        })
+    }
+
     fn to_canonical(&self) -> String {
         let c = json!([
             0,
