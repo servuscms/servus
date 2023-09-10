@@ -326,7 +326,7 @@ async fn handle_websocket(
                     }
                 }
                 if let Some(subscription_id) = posts_subscription {
-                    let mut events: Vec<String> = vec![];
+                    let mut events: Vec<nostr::Event> = vec![];
                     {
                         let host = request.host().unwrap().to_string();
                         let sites = request.state().sites.read().unwrap();
@@ -338,15 +338,20 @@ async fn handle_websocket(
                             let mut path = PathBuf::from(&post.path);
                             path.set_extension("json");
                             if let Ok(json) = fs::read_to_string(&path) {
-                                events.push(json);
+                                let event: nostr::Event = serde_json::from_str(&json).unwrap();
+                                events.push(event);
                             }
                         }
                     }
 
                     for event in &events {
-                        ws.send_json(&json!(vec!["EVENT", &subscription_id, event]))
-                            .await
-                            .unwrap();
+                        ws.send_json(&json!([
+                            serde_json::Value::String("EVENT".to_string()),
+                            serde_json::Value::String(subscription_id.to_string()),
+                            event.to_json(),
+                        ]))
+                        .await
+                        .unwrap();
                     }
                     ws.send_json(&json!(vec!["EOSE", &subscription_id]))
                         .await
