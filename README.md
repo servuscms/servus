@@ -31,11 +31,11 @@ In order to use it, you need at least some basic understanding of:
 
 You also need a VPS with SSH access where you would run **Servus** unless you are just curious and want to test it locally, which is doable, although a bit tricky due to the SSL certificates.
 
-Also keep in mind that everything changes all the time without prior notice, for now...
+Also keep in mind that everything changes all the time without prior notice for now...
 
 ### UI
 
-It is worth mentioning, before you go any further with false expectations, that **Servus** has no UI at all. It is very much like Jekyll in this regard. If you are familiar with tools like Jekyll you will feel at home, otherwise it will make no sense at all.
+It is worth mentioning, before you go any further with false expectations, that **Servus** has a very basic admin interface which is not only lacking features but also still buggy. Don't rely on it... yet!
 
 ### Beginners
 
@@ -47,7 +47,7 @@ Things are definitely going to improve, but I am too busy building a solid found
 
 ## Themes
 
-Not only there is no UI, but there are no usable themes included.
+Not only there is no stable UI, but there are no usable themes included.
 
 A separate repository named `themes` exists, but it is very much WIP.
 
@@ -169,17 +169,23 @@ You can also use **Servus** without Nostr in a similar way you would use Jekyll,
 
 A simple REST API exists that can be used to create new sites and list sites associated with a Nostr pubkey.
 
-In order to activate the API, you need to pass `--api-domain <API_DOMAIN>`. Servus will listen to that domain for API requests.
+In order to activate the API, you need to pass `--admin-domain <ADMIN_DOMAIN>`. Servus will listen to that domain for API requests.
 
 ### `/api/keys/<key>/sites`
 
-A POST to `https://<API_DOMAIN>/api/keys/<key>/sites` can be used to add new sites, which have to be subdomains of API_DOMAIN and will have a <key> as the associated Nostr `pubkey`.
+A POST to `https://<ADMIN_DOMAIN>/api/keys/<key>/sites` can be used to add new sites and will have a <key> as the associated Nostr `pubkey`.
 
-Example: `curl -X POST -H "Content-Type: application/json" -d '{"subdomain": "hello"}' https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will create a site named `hello.servus.page` to which you can then post using Nostr events signed with the corresponding private key.
+Example: `curl -X POST -H "Content-Type: application/json" -d '{"domain": "hello"}' https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will create a site named `hello.servus.page` to which you can then post using Nostr events signed with the corresponding private key.
 
-A GET to `https://<API_DOMAIN>/api/keys/<key>/sites` can be used to get a list of sites associated with <key>.
+A GET to `https://<ADMIN_DOMAIN>/api/keys/<key>/sites` can be used to get a list of sites associated with <key>.
 
 Example: `curl https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will return `["hello.servus.page"]` (after the above POST has been executed).
+
+## Admin interface
+
+The same `--admin-domain <ADMIN_DOMAIN>` flag used to activate the REST API is also used to activate... you guessed it... the *admin interface*!
+
+The *admin interface* requires you to have a Nostr extension such as [Alby](https://getalby.com/) or [nos2x](https://github.com/fiatjaf/nos2x) installed in your browser and lets you create sites, create posts and edit posts. Still very experimental, even more so than **Servus** itself!
 
 ## Any questions?
 
