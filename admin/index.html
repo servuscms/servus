@@ -1,0 +1,174 @@
+<html>
+    <head>
+        <link href="https://cdn.jsdelivr.net/npm/daisyui@3.6.2/dist/full.css" rel="stylesheet" type="text/css" />
+        <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+        <script src="https://unpkg.com/alpinejs" defer></script>
+        <script>
+            const API_BASE_URL = "%%API_BASE_URL%%";
+
+            async function getSites(sites) {
+                sites.length = 0;
+                let pk = await window.nostr.getPublicKey();
+                let response = await fetch(`${API_BASE_URL}/api/keys/${pk}/sites`);
+                for (const s of await response.json()) {
+                    let site = {'domain': s};
+                    sites.push(site);
+                }
+            }
+
+            async function saveSite(site) {
+                let pk = await window.nostr.getPublicKey();
+                let response = await fetch(`${API_BASE_URL}/api/keys/${pk}/sites`, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        domain: site.domain,
+                    }),
+                });
+            }
+
+            function getPosts(sites, posts) {
+                posts.length = 0;
+                for (let site of sites) {
+                    let ws = new WebSocket("wss://" + site.domain);
+                    ws.onmessage = (e) => {
+                        let r = JSON.parse(e.data);
+                        if (r[0] === 'EVENT') {
+                            let post = {'content': r[2].content, 'site': site, 'persisted': true};
+                            for (let i = 0; i < r[2].tags.length; i++) {
+                                let tag = r[2].tags[i];
+                                if (tag[0] === 'title') {
+                                    post.title = tag[1];
+                                } else if (tag[0] === 'd') {
+                                    post.id = tag[1];
+                                }
+                            }
+                            posts.push(post);
+                        }
+                    };
+                    ws.onopen = (e) => {
+                        ws.send(JSON.stringify(['REQ', (Math.random() + 1).toString(36).substring(2), {'kinds': [30023]}]));
+                    };
+                }
+            }
+
+            const hexes = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+
+            function bytesToHex(bytes) {
+                let hex = '';
+                for (let i = 0; i < bytes.length; i++) {
+                    hex += hexes[bytes[i]];
+                }
+                return hex;
+            }
+
+            function savePost(post) {
+                let ws = new WebSocket("wss://" + post.site.domain);
+                ws.onopen = async (e) => {
+                    if (post.id === undefined) {
+                        post.id = post.title.toLowerCase().replace(/ /g, "-").replace(/[^\w-]+/g, "");
+                    }
+                    let event = {'kind': 30023, 'content': post.content, 'tags': [['d', post.id], ['title', post.title]]};
+                    event.pubkey = await window.nostr.getPublicKey();
+                    event.created_at = Math.round(new Date().getTime() / 1000);
+                    serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
+                    event.id = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", (new TextEncoder()).encode(serialized))));
+                    let signedEvent = await window.nostr.signEvent(event);
+                    ws.send(JSON.stringify(['EVENT', signedEvent]));
+                    post.persisted = true;
+                };
+            }
+        </script>
+    </head>
+    <body>
+        <div class="w-11/12 mx-auto" x-data="{site: null, post: null, sites: [], posts: []}" x-init="await getSites(sites); await getPosts(sites, posts)">
+            <div class="navbar bg-base-200">
+                <div class="navbar-start">
+                    <a class="btn btn-ghost normal-case text-xl">Servus</a>
+                </div>
+                <div class="navbar-end">
+                    <label for="admin-drawer" class="btn btn-primary drawer-button">Admin</label>
+                </div>
+            </div>
+            <div class="drawer">
+                <input id="admin-drawer" type="checkbox" class="drawer-toggle" />
+                <div class="drawer-content flex flex-col items-center justify-center">
+                    <template x-if="post">
+                        <div class="w-3/4 mt-24">
+                            <div class="form-control w-full max-w-full">
+                                <label class="label" for="title">
+                                    <span class="label-text">Title</span>
+                                </label>
+                                <input x-model="post.title" type="text" name="title" class="input input-bordered" />
+                            </div>
+                            <div class="form-control mt-2">
+                                <label class="label" for="url">
+                                    <span class="label-text">URL</span>
+                                </label>
+                                <div>
+                                    <span x-text="post ? 'http://' + post.site.domain + '/' : ''"></span>
+                                    <input x-model="post.id" type="text" name="id" class="input input-bordered" :disabled="post.persisted" />
+                                </div>
+                            </div>
+                            <div class="form-control mt-2">
+                                <label class="label" for="content">
+                                    <span class="label-text">Content</span>
+                                </label>
+                                <textarea x-model="post.content" rows="6" class="textarea textarea-bordered h-48"></textarea>
+                            </div>
+                            <div class="w-full flex justify-center items-center mt-2">
+                                <div class="w-1/2 flex justify-center items-center gap-2">
+                                    <button x-on:click="if (!post.persisted) posts = posts.slice(0, -1); site = null; post = null" class="btn mt-1">Cancel</button>
+                                    <button x-on:click="savePost(post); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                    <template x-if="!post && site">
+                        <div class="w-3/4 mt-24">
+                            <div class="form-control w-full max-w-full">
+                                <label class="label" for="domain">
+                                    <span class="label-text">Domain</span>
+                                </label>
+                                <input x-model="site.domain" type="text" name="domain" class="input input-bordered" />
+                            </div>
+                            <div class="w-full flex justify-center items-center mt-2">
+                                <div class="w-1/2 flex justify-center items-center gap-2">
+                                    <button x-on:click="site = null" class="btn mt-1">Cancel</button>
+                                    <button x-on:click="await saveSite(site); sites = sites.concat(site); site = null;" class="btn btn-primary mt-1">Save</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+                <div class="drawer-side">
+                    <label for="admin-drawer" class="drawer-overlay"></label>
+                    <ul class="menu p-4 w-80 min-h-full bg-base-200 text-base-content">
+                        <template x-for="s in sites">
+                            <div class="collapse collapse-arrow bg-base-200">
+                                <input type="radio" name="admin-accordion" /> 
+                                <div class="collapse-title text-xl font-medium">
+                                    <span class="text-2xl" x-text="s.domain"></span>
+                                </div>
+                                <div class="collapse-content">
+                                    <ul class="p-4 bg-base-200 text-base-content">
+                                        <template x-for="p in posts">
+                                            <template x-if="p.site.domain === s.domain">
+                                                <li><a x-text="p.title" x-on:click="post = p; site = s;"></a></li>
+                                            </template>
+                                        </template>
+                                    </ul>
+                                    <a class="btn btn-outline btn-primary" x-on:click="post = {'id': undefined, 'title': 'New post', 'content': 'New content', 'site': s, 'persisted': false}; posts = posts.concat(post); site = s;">New post</a>
+                                </div>
+                            </div>
+                        </template>
+                        <li><a class="btn btn-outline btn-primary drawer-button" x-on:click="post = null; site = {'domain': ''}">New site</a></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

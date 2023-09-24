@@ -169,15 +169,15 @@ You can also use **Servus** without Nostr in a similar way you would use Jekyll,
 
 A simple REST API exists that can be used to create new sites and list sites associated with a Nostr pubkey.
 
-In order to activate the API, you need to pass `--api-domain <API_DOMAIN>`. Servus will listen to that domain for API requests.
+In order to activate the API, you need to pass `--admin-domain <ADMIN_DOMAIN>`. Servus will listen to that domain for API requests.
 
 ### `/api/keys/<key>/sites`
 
-A POST to `https://<API_DOMAIN>/api/keys/<key>/sites` can be used to add new sites, which have to be subdomains of API_DOMAIN and will have a <key> as the associated Nostr `pubkey`.
+A POST to `https://<ADMIN_DOMAIN>/api/keys/<key>/sites` can be used to add new sites and will have a <key> as the associated Nostr `pubkey`.
 
-Example: `curl -X POST -H "Content-Type: application/json" -d '{"subdomain": "hello"}' https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will create a site named `hello.servus.page` to which you can then post using Nostr events signed with the corresponding private key.
+Example: `curl -X POST -H "Content-Type: application/json" -d '{"domain": "hello"}' https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will create a site named `hello.servus.page` to which you can then post using Nostr events signed with the corresponding private key.
 
-A GET to `https://<API_DOMAIN>/api/keys/<key>/sites` can be used to get a list of sites associated with <key>.
+A GET to `https://<ADMIN_DOMAIN>/api/keys/<key>/sites` can be used to get a list of sites associated with <key>.
 
 Example: `curl https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will return `["hello.servus.page"]` (after the above POST has been executed).
 

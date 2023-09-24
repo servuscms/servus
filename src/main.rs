@@ -22,6 +22,10 @@ use yaml_front_matter::YamlFrontMatter;
 
 mod nostr;
 
+mod admin {
+    include!(concat!(env!("OUT_DIR"), "/admin.rs"));
+}
+
 #[derive(clap::ValueEnum, Clone)]
 pub enum Mode {
     Dev,
@@ -31,7 +35,7 @@ pub enum Mode {
 #[derive(Parser)]
 struct Cli {
     #[clap(short, long)]
-    api_domain: Option<String>,
+    admin_domain: Option<String>,
 
     #[clap(short('e'), long)]
     contact_email: Option<String>,
@@ -98,13 +102,13 @@ struct SiteState {
 
 #[derive(Clone)]
 struct State {
-    api_domain: Option<String>,
+    admin_domain: Option<String>,
     sites: Arc<RwLock<HashMap<String, SiteState>>>,
 }
 
 #[derive(Deserialize, Serialize)]
 struct Site {
-    subdomain: String,
+    domain: String,
 }
 
 fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
@@ -377,8 +381,22 @@ async fn handle_websocket(
 }
 
 async fn handle_index(request: Request<State>) -> tide::Result<Response> {
+    let state = &request.state();
+
+    if state.admin_domain.is_some() {
+        let admin_domain = state.admin_domain.to_owned().unwrap();
+        if *request.host().unwrap() == admin_domain {
+            let admin_index =
+                admin::INDEX_HTML.replace("%%API_BASE_URL%%", &format!("https://{}", admin_domain));
+            return Ok(Response::builder(StatusCode::Ok)
+                .content_type(mime::HTML)
+                .body(admin_index)
+                .build());
+        }
+    }
+
     let host = request.host().unwrap().to_string();
-    let sites = request.state().sites.read().unwrap();
+    let sites = state.sites.read().unwrap();
     let site_state = if sites.contains_key(&host) {
         sites.get(&host).unwrap()
     } else {
@@ -456,30 +474,22 @@ async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> 
     let site: Site = request.body_json().await.unwrap();
     let state = &request.state();
 
-    if state.api_domain.is_none() {
+    if state.admin_domain.is_none() {
         return Ok(Response::builder(StatusCode::NotFound).build());
     }
 
-    let api_domain = state.api_domain.to_owned().unwrap();
+    let admin_domain = state.admin_domain.to_owned().unwrap();
 
-    if *request.host().unwrap() != api_domain {
+    if *request.host().unwrap() != admin_domain {
         return Ok(Response::builder(StatusCode::NotFound).build());
     }
 
-    if site.subdomain.contains('.') {
-        return Ok(Response::builder(StatusCode::BadRequest)
-            .content_type(mime::JSON)
-            .body("{'message': 'Invalid subdomain.'}")
-            .build());
-    }
-
-    let new_site = format!("{}.{}", site.subdomain, api_domain);
-    if state.sites.read().unwrap().contains_key(&new_site) {
+    if state.sites.read().unwrap().contains_key(&site.domain) {
         Ok(Response::builder(StatusCode::Conflict).build())
     } else {
-        let path = format!("./sites/{}", new_site);
+        let path = format!("./sites/{}", site.domain);
         fs::create_dir_all(&path).unwrap();
-        fs::create_dir_all(format!("./sites/{}/_posts", new_site)).unwrap();
+        fs::create_dir_all(format!("./sites/{}/_posts", site.domain)).unwrap();
 
         let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
         tera.autoescape_on(vec![]);
@@ -487,7 +497,7 @@ async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> 
         let key = request.param("key").unwrap();
         let config_content = format!("[site]\npubkey = \"{}\"", key);
         fs::write(
-            format!("./sites/{}/_config.toml", new_site),
+            format!("./sites/{}/_config.toml", site.domain),
             &config_content,
         )
         .unwrap();
@@ -497,7 +507,7 @@ async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> 
 
         let sites = &mut state.sites.write().unwrap();
         sites.insert(
-            new_site,
+            site.domain,
             SiteState {
                 site: site_config.clone(),
                 path,
@@ -543,7 +553,7 @@ async fn main() -> Result<(), std::io::Error> {
     femme::with_level(log::LevelFilter::Info);
 
     let mut app = tide::with_state(State {
-        api_domain: args.api_domain.clone(),
+        admin_domain: args.admin_domain.clone(),
         sites: Arc::new(RwLock::new(get_sites())),
     });
 
@@ -552,7 +562,7 @@ async fn main() -> Result<(), std::io::Error> {
         .with(WebSocket::new(handle_websocket))
         .get(handle_index);
     app.at("*path").get(handle_get);
-    if args.api_domain.is_some() {
+    if args.admin_domain.is_some() {
         app.at("/api/keys/:key/sites").post(handle_new_site);
         app.at("/api/keys/:key/sites").get(handle_list_sites);
     }
@@ -603,8 +613,8 @@ async fn main() -> Result<(), std::io::Error> {
                 .keys()
                 .map(|x| x.to_string())
                 .collect();
-            if args.api_domain.is_some() {
-                domains.push(args.api_domain.unwrap());
+            if args.admin_domain.is_some() {
+                domains.push(args.admin_domain.unwrap());
             }
             let cache = DirCache::new("./cache");
             let acme_config = AcmeConfig::new(domains)
