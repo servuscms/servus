@@ -154,10 +154,11 @@ Any custom front matter that you specify will be available under `page`. You can
 
 ## Posting
 
-You can post to your blog in two ways:
+You can post to your blog in three ways:
 
-1. **Post by adding files to the *_posts* directory** - this is basically what you would do with Jekyll.
-2. **Post using a Nostr NIP-23 client**
+1. **Post by adding files to the *_posts* directory** - this is basically what you would do with Jekyll
+2. **Post using a 3rd party Nostr NIP-23 client**
+3. **Post using the built-in admin interface** - which is essentially a Nostr NIP-23 client
 
 ## Nostr
 
@@ -179,7 +180,7 @@ Example: `curl -X POST -H "Content-Type: application/json" -d '{"domain": "hello
 
 A GET to `https://<ADMIN_DOMAIN>/api/keys/<key>/sites` can be used to get a list of sites associated with <key>.
 
-Example: `curl https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will return `["hello.servus.page"]` (after the above POST has been executed).
+Example: `curl https://servus.page/api/keys/f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6/sites` will return `[{"domain": "hello.servus.page"}]` (after the above POST has been executed).
 
 ## Admin interface
 

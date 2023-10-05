@@ -11,8 +11,7 @@
                 let pk = await window.nostr.getPublicKey();
                 let response = await fetch(`${API_BASE_URL}/api/keys/${pk}/sites`);
                 for (const s of await response.json()) {
-                    let site = {'domain': s};
-                    sites.push(site);
+                    sites.push(s);
                 }
             }
 
