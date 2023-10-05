@@ -154,10 +154,11 @@ Any custom front matter that you specify will be available under `page`. You can
 
 ## Posting
 
-You can post to your blog in two ways:
+You can post to your blog in three ways:
 
-1. **Post by adding files to the *_posts* directory** - this is basically what you would do with Jekyll.
-2. **Post using a Nostr NIP-23 client**
+1. **Post by adding files to the *_posts* directory** - this is basically what you would do with Jekyll
+2. **Post using a 3rd party Nostr NIP-23 client**
+3. **Post using the built-in admin interface** - which is essentially a Nostr NIP-23 client
 
 ## Nostr
 
