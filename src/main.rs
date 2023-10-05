@@ -533,7 +533,7 @@ async fn handle_list_sites(request: Request<State>) -> tide::Result<Response> {
         .filter_map(|s| {
             let pk = s.1.site.get("pubkey")?;
             if pk.as_str().unwrap() == key {
-                Some(s.0)
+                Some(HashMap::from([("domain", s.0)]))
             } else {
                 None
             }
