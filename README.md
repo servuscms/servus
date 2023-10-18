@@ -1,4 +1,4 @@
-# servus
+# Servus
 
 ![alt text](https://github.com/servuscms/servus.page/blob/master/images/logo.png?raw=true)
 
@@ -12,11 +12,23 @@ While that might sound like SSG, it is not.
 
 Unlike static site generators such as Jekyll, it does not have a build step nor does it require a web server to actually serve the files.
 
-However, the design is heavily influenced by Jekyll in that the posts are stored in Markdown files with YAML front matter. The main difference is that rendered files are stored in memory and served directly by **servus**.
+However, the design is heavily influenced by Jekyll in that the posts are stored in plain text files. However, rendered HTML files are stored in memory and served directly by **Servus**.
 
 Posting can be done using the [Nostr protocol](https://github.com/nostr-protocol/nostr)'s [Long-form Content](https://github.com/nostr-protocol/nips/blob/master/23.md) event kind, so any Nostr client compatible with NIP-23 can be used for posting.
 
-Posts can be retrieved using RSS/Atom in a similar way one would accomplish that with Jekyll (by building a template that iterates over the available posts and generates RSS/Atom) or by using the Nostr protocol to subscribe to events of kind `30023`. In the latter case, only posts that came via Nostr will be returned, because they need to be cryptographically signed by the client when posted.
+Web pages can be read using any web browser and posts can be retrieved using RSS/Atom or by using the Nostr protocol.
+
+## Goals and non-goals
+
+Saying "let's build a CMS" is like saying "let's build a housing unit" in that 1) it's nothing new and 2) it is *extremely vague*. Therefore, defining the goals and non-goals of *this particular* CMS is essential for staying on track. Also, by reading these points, you can quickly decide whether Servus suits your particular needs or pick up one of the other 999 CMSes available to choose from...
+
+* **Single executable** that you can `scp` to a bare VPS and it will just work. Without Docker, without MySQL, without Python venv, without Node or PHP, without setting up an Nginx reverse proxy and whatnot... You shouldn't need any of that to self-host your personal website!
+* All content and settings stored as **plain text**. Except, of course, images or other media you have as content. Not in a SQL database, not in "the cloud", not in "some Nostr relays"... but in plain text files on the machine running Servus.
+* As a corolary of the above, all content and settings **are stored in a local directory** (on the machine running Servus). This means that a *full backup* is just a `rsync` command... or a `.zip` file with all your content. Download a copy of it to your laptop, edit it with your favourite editor, write a script that imports it in another CMS, search it, copy-paste parts of it to other places...
+* All content served to the readers is **plain HTML served over HTTP(S)**. No Javascript that generates the UI elements on the client side, no Javascript that queries Nostr relays or uses background HTTP requests other ways to get content from the server. What you get is a plain "website" that you can open in any web browser or even using `wget`.
+* The **admin interface** however is a Javascript client-side app, because signing of Nostr events has to be done by your web browser. You don't want your Nostr private key sitting around on some VPS.
+* **Support for "themes"**. *Simple* doesn't mean ugly nor does it mean it should be limited in any way. Avoiding unnecessary client-side technologies doesn't mean the websites built using Servus need to look "old school" or be limited in functionality. In fact, themes *can* use Javascript *if they want to* - for certain effects, etc. The goal is to not *require* Javascript as part of the overall architecture, not to avoid it at any cost.
+* **Multiple websites** in one instance, that can be separately administered. In fact, there will be a publicly available Servus instance that you can use if you don't want to rent out a VPS or have a computer running in your closet, although these options are preferred.
 
 ## Status
 
