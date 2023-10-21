@@ -30,6 +30,18 @@ Saying "let's build a CMS" is like saying "let's build a housing unit" in that 1
 * **Support for "themes"**. *Simple* doesn't mean ugly nor does it mean it should be limited in any way. Avoiding unnecessary client-side technologies doesn't mean the websites built using Servus need to look "old school" or be limited in functionality. In fact, themes *can* use Javascript *if they want to* - for certain effects, etc. The goal is to not *require* Javascript as part of the overall architecture, not to avoid it at any cost.
 * **Multiple websites** in one instance, that can be separately administered. In fact, there will be a publicly available Servus instance that you can use if you don't want to rent out a VPS or have a computer running in your closet, although these options are preferred.
 
+### Performance and limitations
+
+Defining *performance goals* is equally important to defining general goals because it also impacts architectural decisions and trade-offs.
+
+Being first and foremost a *web-based CMS* and then a *personal Nostr relay*, **the (perceived) performance for the visitors of web pages** hosted using Servus is the most important.
+
+All web pages are pre-rendered (using the theme chosen by the website's owner) so they can immediately be served when a HTTP request is received. Also, as mentioned above, the web browser does not need to run any client-side code or make any additional requests to get the full experience! Plain HTML, CSS + any images, etc... It is also very easy to put a CDN in front of Servus and make requests even faster because of this very reason (static pages with no dependence on external requests)!
+
+**Servus** does **not** aim to be a performant general-purpose Nostr relay - one that can efficiently ingest huge numbers of events, execute random queries or stream back events for subscriptions in real-time. There are others much better at that!
+
+The *Nostr relay* offered by Servus is very limited! It should be **fast to get all events belonging to a website**... but it is impossible to make more complex queries (events from multiple - or even one `authors` across websites... `since`, `until`, ...). Also, you don't get streaming of new events coming in after a query has been issued! After existing events are returned as response to a query, you get [`EOSE`](https://github.com/nostr-protocol/nips/blob/master/01.md) and the connection is closed. The client needs to open a new connection and make a new query later in the future if it wants to get new events. Sort of like RSS-over-Nostr!
+
 ## Status
 
 While **Servus** has quite a few features that may look like "advanced" and I use it personally to serve two production sites, it is also still very much experimental and definitely not for everyone - especially not for beginners!
