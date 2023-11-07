@@ -111,7 +111,7 @@ struct Site {
     domain: String,
 }
 
-fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
+fn add_post_via_nostr(site_state: &SiteState, event: &nostr::Event) {
     let mut slug = String::new();
     let mut title = String::new();
     let mut summary = None;
@@ -205,6 +205,68 @@ fn add_post_from_nostr(site_state: &SiteState, event: &nostr::Event) {
     log::info!("Added post: {}.", &slug);
 }
 
+fn remove_post_via_nostr(site_state: &SiteState, deletion_event: &nostr::Event) -> bool {
+    let mut deleted_event_ref: Option<String> = None;
+    for tag in &deletion_event.tags {
+        if tag[0] == "a" {
+            // TODO: should we also support "e" tags?
+            deleted_event_ref = Some(tag[1].to_owned());
+        }
+    }
+
+    if deleted_event_ref.is_none() {
+        log::info!("No event reference found!");
+        return false;
+    }
+
+    let deleted_event_ref: String = deleted_event_ref.unwrap();
+
+    let parts = deleted_event_ref.split(':').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        log::info!("Invalid event reference!");
+        return false;
+    }
+
+    if parts[1] != deletion_event.pubkey {
+        log::info!("Attempt to delete somebody else's event!");
+        return false;
+    }
+
+    if parts[0].parse::<u64>().unwrap() != nostr::EVENT_KIND_LONG_FORM {
+        return false;
+    }
+
+    let slug = parts[2].to_owned();
+
+    let mut resource_url: Option<String> = None;
+    let mut resource_path: Option<String> = None;
+    {
+        let slug = Some(slug.to_owned());
+        for post in get_posts_list(&site_state.resources.read().unwrap()) {
+            if post.slug == slug {
+                resource_url = Some(post.url.to_owned());
+                resource_path = Some(post.path.to_owned());
+            }
+        }
+    }
+
+    if let (Some(resource_url), Some(resource_path)) = (resource_url, resource_path) {
+        site_state.resources.write().unwrap().remove(&resource_url);
+        site_state.content.write().unwrap().remove(&resource_url);
+
+        std::fs::remove_file(&resource_path).unwrap();
+        std::fs::remove_file(Path::new(&resource_path).with_extension("json").as_path()).unwrap();
+
+        log::info!("Removed post: {}.", &slug);
+
+        true
+    } else {
+        log::info!("Post not found: {}.", &slug);
+
+        false
+    }
+}
+
 fn build_response(resource: &Resource, content: &Content) -> Response {
     let mime = mime::Mime::from_str(resource.mime.as_str()).unwrap();
 
@@ -280,19 +342,38 @@ async fn handle_websocket(
                     continue;
                 }
 
-                if cmd.event.kind == 30023 {
+                if cmd.event.kind == nostr::EVENT_KIND_LONG_FORM {
                     {
                         let host = request.host().unwrap().to_string();
                         let sites = request.state().sites.read().unwrap();
                         if !sites.contains_key(&host) {
                             return Ok(());
                         }
-                        add_post_from_nostr(sites.get(&host).unwrap(), &cmd.event);
+                        add_post_via_nostr(sites.get(&host).unwrap(), &cmd.event);
                     }
                     ws.send_json(&json!(vec![
                         serde_json::Value::String("OK".to_string()),
                         serde_json::Value::String(cmd.event.id.to_string()),
                         serde_json::Value::Bool(true),
+                        serde_json::Value::String("".to_string())
+                    ]))
+                    .await
+                    .unwrap();
+                } else if cmd.event.kind == nostr::EVENT_KIND_DELETE {
+                    let post_removed: bool;
+                    {
+                        let host = request.host().unwrap().to_string();
+                        let sites = request.state().sites.read().unwrap();
+                        if !sites.contains_key(&host) {
+                            return Ok(());
+                        }
+                        post_removed = remove_post_via_nostr(sites.get(&host).unwrap(), &cmd.event);
+                    }
+
+                    ws.send_json(&json!(vec![
+                        serde_json::Value::String("OK".to_string()),
+                        serde_json::Value::String(cmd.event.id.to_string()),
+                        serde_json::Value::Bool(post_removed),
                         serde_json::Value::String("".to_string())
                     ]))
                     .await
@@ -315,7 +396,7 @@ async fn handle_websocket(
                         .iter()
                         .map(|f| f.as_u64().unwrap())
                         .collect::<Vec<u64>>();
-                    if filter_values.contains(&30023) {
+                    if filter_values.contains(&nostr::EVENT_KIND_LONG_FORM) {
                         posts_subscription = Some(cmd.subscription_id.to_owned());
                     } else {
                         log::info!(

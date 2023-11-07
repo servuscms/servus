@@ -20,6 +20,9 @@ pub struct Event {
     pub sig: String,
 }
 
+pub const EVENT_KIND_DELETE: u64 = 5;
+pub const EVENT_KIND_LONG_FORM: u64 = 30023;
+
 lazy_static! {
     pub static ref SECP: Secp256k1<VerifyOnly> = Secp256k1::verification_only();
 }

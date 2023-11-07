@@ -80,6 +80,21 @@
                     post.persisted = true;
                 };
             }
+
+           function deletePost(post) {
+                let ws = new WebSocket("wss://" + post.site.domain);
+                ws.onopen = async (e) => {
+                    let event = {'kind': 5, 'content': ""};
+                    event.pubkey = await window.nostr.getPublicKey();
+                    event.tags = [['a', `30023:${event.pubkey}:${post.id}`]];
+                    event.created_at = Math.round(new Date().getTime() / 1000);
+                    serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
+                    event.id = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", (new TextEncoder()).encode(serialized))));
+                    let signedEvent = await window.nostr.signEvent(event);
+                    ws.send(JSON.stringify(['EVENT', signedEvent]));
+                    post.persisted = false;
+                };
+            }
         </script>
     </head>
     <body>
@@ -119,9 +134,16 @@
                                 <textarea x-model="post.content" rows="6" class="textarea textarea-bordered h-48"></textarea>
                             </div>
                             <div class="w-full flex justify-center items-center mt-2">
-                                <div class="w-1/2 flex justify-center items-center gap-2">
-                                    <button x-on:click="if (!post.persisted) posts = posts.slice(0, -1); site = null; post = null" class="btn mt-1">Cancel</button>
-                                    <button x-on:click="savePost(post); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
+                                <div class="w-full flex justify-center items-center gap-2">
+                                    <div class="w-1/2 flex flex-row gap-2">
+                                        <button x-on:click="savePost(post); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
+                                        <button x-on:click="if (!post.persisted) posts = posts.slice(0, -1); site = null; post = null" class="btn mt-1">Cancel</button>
+                                    </div>
+                                    <template x-if="post.id !== undefined && post.persisted">
+                                        <div class="w-1/2 flex flex-row-reverse">
+                                            <button x-on:click="if (confirm('Are you sure?')) { deletePost(post); post = null; site = null; await getPosts(sites, posts); }" class="btn btn-error mt-1">Delete</button>
+                                        </div>
+                                    </template>
                                 </div>
                             </div>
                         </div>
