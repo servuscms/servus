@@ -26,15 +26,9 @@ mod admin {
     include!(concat!(env!("OUT_DIR"), "/admin.rs"));
 }
 
-#[derive(clap::ValueEnum, Clone)]
-pub enum Mode {
-    Dev,
-    Live,
-}
-
 #[derive(Parser)]
 struct Cli {
-    #[clap(short, long)]
+    #[clap(short('a'), long)]
     admin_domain: Option<String>,
 
     #[clap(short('e'), long)]
@@ -49,8 +43,11 @@ struct Cli {
     #[clap(short('s'), long)]
     ssl_acme: bool,
 
-    #[clap(value_enum)]
-    mode: Mode,
+    #[clap(long)]
+    ssl_acme_production: bool,
+
+    #[clap(short('p'), long)]
+    port: Option<u32>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -468,7 +465,7 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
         let admin_domain = state.admin_domain.to_owned().unwrap();
         if *request.host().unwrap() == admin_domain {
             let admin_index =
-                admin::INDEX_HTML.replace("%%API_BASE_URL%%", &format!("https://{}", admin_domain));
+                admin::INDEX_HTML.replace("%%API_BASE_URL%%", &format!("//{}", admin_domain));
             return Ok(Response::builder(StatusCode::Ok)
                 .content_type(mime::HTML)
                 .body(admin_index)
@@ -649,67 +646,48 @@ async fn main() -> Result<(), std::io::Error> {
     }
 
     let addr = "0.0.0.0";
-    let mut port = 443;
-    let mut ssl = true;
-    let mut dev_mode = false;
-    let mut production_cert = false; // default to staging
 
-    match args.mode {
-        Mode::Dev => {
-            port = 4884;
-            ssl = false;
-            dev_mode = true;
-        }
-        Mode::Live => {
-            production_cert = true;
-        }
-    }
-
-    if dev_mode {
-        println!("Open http://localhost:{} in your browser!", port);
-    } else {
-        println!("Running on port {}", port);
-        if !production_cert {
-            println!("Using Let's Encrypt staging environment. Great for testing, but browsers will complain about the certificate.");
-        }
-    }
-
-    let bind_to = format!("{addr}:{port}");
-
-    if ssl {
+    if args.ssl_cert.is_some() && args.ssl_key.is_some() {
+        let port = args.port.unwrap_or(443);
+        let bind_to = format!("{addr}:{port}");
         let mut listener = tide_rustls::TlsListener::build().addrs(bind_to);
-        listener = if args.ssl_cert.is_some() && args.ssl_key.is_some() {
-            listener
-                .cert(args.ssl_cert.unwrap())
-                .key(args.ssl_key.unwrap())
-        } else if args.ssl_acme {
-            if args.contact_email.is_none() {
-                panic!("Use -e to provide a contact email!");
-            }
-            let mut domains: Vec<String> = app
-                .state()
-                .sites
-                .read()
-                .unwrap()
-                .keys()
-                .map(|x| x.to_string())
-                .collect();
-            if args.admin_domain.is_some() {
-                domains.push(args.admin_domain.unwrap());
-            }
-            let cache = DirCache::new("./cache");
-            let acme_config = AcmeConfig::new(domains)
-                .cache(cache)
-                .directory_lets_encrypt(production_cert)
-                .contact_push(format!("mailto:{}", args.contact_email.unwrap()));
-            listener.acme(acme_config)
-        } else {
-            panic!("Pass either --ssh-cert and --ssl-key OR --ssl-acme");
-        };
+        listener = listener
+            .cert(args.ssl_cert.unwrap())
+            .key(args.ssl_key.unwrap());
+        app.listen(listener).await?;
+    } else if args.ssl_acme || args.ssl_acme_production {
+        if args.contact_email.is_none() {
+            panic!("Use -e to provide a contact email!");
+        }
+        let mut domains: Vec<String> = app
+            .state()
+            .sites
+            .read()
+            .unwrap()
+            .keys()
+            .map(|x| x.to_string())
+            .collect();
+        if args.admin_domain.is_some() {
+            domains.push(args.admin_domain.unwrap());
+        }
+        let cache = DirCache::new("./cache");
+        let acme_config = AcmeConfig::new(domains)
+            .cache(cache)
+            .directory_lets_encrypt(args.ssl_acme_production)
+            .contact_push(format!("mailto:{}", args.contact_email.unwrap()));
+        let port = args.port.unwrap_or(443);
+        let bind_to = format!("{addr}:{port}");
+        let mut listener = tide_rustls::TlsListener::build().addrs(bind_to);
+        listener = listener.acme(acme_config);
+        if !args.ssl_acme_production {
+            println!("NB: Using Let's Encrypt STAGING environment! Great for testing, but browsers will complain about the certificate.");
+        }
         app.listen(listener).await?;
     } else {
+        let port = args.port.unwrap_or(4884);
+        let bind_to = format!("{addr}:{port}");
         app.listen(bind_to).await?;
-    }
+    };
 
     Ok(())
 }

@@ -5,6 +5,7 @@
         <script src="https://unpkg.com/alpinejs" defer></script>
         <script>
             const API_BASE_URL = "%%API_BASE_URL%%";
+            const WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
 
             async function getSites(sites) {
                 sites.length = 0;
@@ -32,7 +33,7 @@
             function getPosts(sites, posts) {
                 posts.length = 0;
                 for (let site of sites) {
-                    let ws = new WebSocket("wss://" + site.domain);
+                    let ws = new WebSocket(`${WS_PROTOCOL}//${site.domain}`);
                     ws.onmessage = (e) => {
                         let r = JSON.parse(e.data);
                         if (r[0] === 'EVENT') {
@@ -65,7 +66,7 @@
             }
 
             function savePost(post) {
-                let ws = new WebSocket("wss://" + post.site.domain);
+                let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
                 ws.onopen = async (e) => {
                     if (post.id === undefined) {
                         post.id = post.title.toLowerCase().replace(/ /g, "-").replace(/[^\w-]+/g, "");
@@ -82,7 +83,7 @@
             }
 
            function deletePost(post) {
-                let ws = new WebSocket("wss://" + post.site.domain);
+               let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
                 ws.onopen = async (e) => {
                     let event = {'kind': 5, 'content': ""};
                     event.pubkey = await window.nostr.getPublicKey();

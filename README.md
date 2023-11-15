@@ -85,15 +85,15 @@ However, porting themes over from Jekyll should be pretty straight forward. Ther
 
 ## Usage
 
-* `./target/debug/servus dev` - this starts **Servus** on port 4884
-* `sudo ./target/release/servus --ssl-acme --contact-email <contact_email> live` - this starts **Servus** on port 443 and obtains SSL certificates from Let's Encrypt using ACME by providing `<contact_email>`
-* `sudo ./target/release/servus --ssl-cert <SSL_CERT_FILE> --ssl-key <SSL_KEY> live` - this starts **Servus** on port 443 using the provided `<SSL_CERT>` and `<SSL_KEY>`
+* `./target/debug/servus` - this starts **Servus** on port 4884, without SSL
+* `sudo ./target/debug/servus --ssl-acme[-production] --contact-email <contact_email>` - this starts **Servus** on port 443 and obtains SSL certificates from Let's Encrypt using ACME by providing `<contact_email>`
+* `sudo ./target/debug/servus --ssl-cert <SSL_CERT_FILE> --ssl-key <SSL_KEY>` - this starts **Servus** on port 443 using the provided `<SSL_CERT>` and `<SSL_KEY>`
 
-Note the `sudo` required to bind to port 443!
+Note the `sudo` required to bind to port 443! Other ports can be used by passing `-p`, whether in SSL mode or not!
 
-NB: in order to obtain Let's Encrypt certificates you must be running Servus on a machine that is accessible via a public IP (such as a VPS) and have the domain name mapped to that machine's IP. Running the "live" version with `-s` on your developement machine won't work because Let's Encrypt will try to actually connect to your domain and validate your setup.
+NB: in order to obtain Let's Encrypt certificates you must be running Servus on a machine that is accessible via a public IP (such as a VPS) and have the domain name mapped to that machine's IP. Running the `--ssl-acme` version on your developement machine won't work because Let's Encrypt will try to actually connect to your domain and validate your setup.
 
-You can try running the "live" version locally using a custom certificate by passing `-c` and `-k` like in the example above. Certificates can be obtained using [acme.sh](https://github.com/acmesh-official/acme.sh), but make sure you run `acme.sh --to-pkcs8` to convert the key to PKCS8 before you pass it to `Servus`.
+You can try running the SSL version locally using a custom certificate by passing `--ssl-cert` and `--ssl-key` like in the example above. Certificates can be obtained using [acme.sh](https://github.com/acmesh-official/acme.sh), but make sure you run `acme.sh --to-pkcs8` to convert the key to PKCS8 before you pass it to `Servus`.
 
 PS: you can map `127.0.0.1` to your domain name from `/etc/hosts` to get a realistic simulation of the live environment on your local machine!
 
