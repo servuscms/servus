@@ -1,4 +1,5 @@
 use async_std::prelude::*;
+use byte_unit::Byte;
 use chrono::{NaiveDate, NaiveDateTime};
 use clap::Parser;
 use http_types::mime;
@@ -48,6 +49,10 @@ struct Cli {
 
     #[clap(short('p'), long)]
     port: Option<u32>,
+
+    // amount of memory used to cache "raw" resources
+    #[clap(long)]
+    raw_resource_cache_size: Option<u128>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -59,12 +64,27 @@ struct ServusMetadata {
 enum ResourceType {
     Post,
     Page,
+    // "Extra" resources are everything that is not posts or pages,
+    // for example images or CSS files,
+    // but also some files that still need to be rendered,
+    // such as RSS/Atom.
     Extra,
 }
 
 #[derive(Clone, Serialize)]
 struct Content {
+    resource_type: ResourceType,
+
+    // "raw" content is loaded directly from files without being processed as a template,
+    // such as images.
+    // Examples of "non raw" content would be XML resources like Atom.
     is_raw: bool,
+
+    // "raw" content is only cached up to a certain limit (raw_resource_cache_size),
+    // after which it will need to be read from disk every time it is accessed.
+    is_cached: bool,
+
+    size: u128,
     content: Option<Vec<u8>>,
 }
 
@@ -106,6 +126,10 @@ struct State {
 #[derive(Deserialize, Serialize)]
 struct Site {
     domain: String,
+}
+
+fn to_human(i: u128) -> byte_unit::AdjustedByte {
+    Byte::from_bytes(i).get_appropriate_unit(false)
 }
 
 fn add_post_via_nostr(site_state: &SiteState, event: &nostr::Event) {
@@ -172,10 +196,14 @@ fn add_post_via_nostr(site_state: &SiteState, event: &nostr::Event) {
     )
     .as_bytes()
     .to_vec();
+    let size = u128::try_from(content.len()).unwrap();
 
     let post_content = Content {
+        resource_type: ResourceType::Post,
         content: Some(content),
         is_raw: false,
+        is_cached: true,
+        size,
     };
 
     let mut site_content = site_state.content.write().unwrap();
@@ -264,13 +292,13 @@ fn remove_post_via_nostr(site_state: &SiteState, deletion_event: &nostr::Event) 
     }
 }
 
-fn build_response(resource: &Resource, content: &Content) -> Response {
+fn build_response(resource: &Resource, content: Vec<u8>) -> Response {
     let mime = mime::Mime::from_str(resource.mime.as_str()).unwrap();
 
     Response::builder(StatusCode::Ok)
         .content_type(mime)
         .header("Access-Control-Allow-Origin", "*")
-        .body(&*content.content.as_ref().unwrap().clone())
+        .body(&*content)
         .build()
 }
 
@@ -491,7 +519,8 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
                 }
                 let content = site_content.get(&resource_path).unwrap();
                 if content.content.is_some() {
-                    return Ok(build_response(resource, content));
+                    let raw_content = content.content.as_ref().unwrap().clone();
+                    return Ok(build_response(resource, raw_content));
                 }
             }
             None => return Ok(Response::new(StatusCode::NotFound)),
@@ -527,7 +556,13 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
                 }
                 let content = site_content.get(&resource_path).unwrap();
                 if content.content.is_some() {
-                    return Ok(build_response(resource, content));
+                    // we already have some cached content ready to serve
+                    let raw_content = content.content.as_ref().unwrap().clone();
+                    return Ok(build_response(resource, raw_content));
+                }
+                if !content.is_cached && content.is_raw {
+                    let raw_content = fs::read(&resource.path).unwrap();
+                    return Ok(build_response(resource, raw_content));
                 }
             }
             None => {
@@ -536,7 +571,8 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
                     Some(resource) => {
                         let content = site_content.get(&resource_path).unwrap();
                         if content.content.is_some() {
-                            return Ok(build_response(resource, content));
+                            let raw_content = content.content.as_ref().unwrap().clone();
+                            return Ok(build_response(resource, raw_content));
                         }
                     }
                     None => return Ok(Response::new(StatusCode::NotFound)),
@@ -632,7 +668,7 @@ async fn main() -> Result<(), std::io::Error> {
 
     let mut app = tide::with_state(State {
         admin_domain: args.admin_domain.clone(),
-        sites: Arc::new(RwLock::new(get_sites())),
+        sites: Arc::new(RwLock::new(load_sites(args.raw_resource_cache_size))),
     });
 
     app.with(log::LogMiddleware::new());
@@ -692,11 +728,17 @@ async fn main() -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn get_sites() -> HashMap<String, SiteState> {
+fn load_sites(raw_resource_cache_size: Option<u128>) -> HashMap<String, SiteState> {
     let paths = match fs::read_dir("./sites") {
         Ok(paths) => paths.map(|r| r.unwrap()).collect(),
         _ => vec![],
     };
+
+    let mut total_post_cache: u128 = 0;
+    let mut total_page_cache: u128 = 0;
+    let mut total_rendered_resource_cache: u128 = 0;
+    let mut total_raw_resource_cache: u128 = 0;
+    let mut total_raw_resource_size: u128 = 0;
 
     let mut sites = HashMap::new();
     for path in &paths {
@@ -747,7 +789,45 @@ fn get_sites() -> HashMap<String, SiteState> {
             site_data.insert(data_name, data);
         }
 
-        let (resources, content) = load_resources(&path.path(), site_config, &site_data, &mut tera);
+        let (resources, content) = load_resources(
+            &path.path(),
+            site_config,
+            &site_data,
+            &mut tera,
+            raw_resource_cache_size.map(|s| s - total_raw_resource_cache),
+        );
+
+        let mut post_cache: u128 = 0;
+        let mut page_cache: u128 = 0;
+        let mut rendered_resource_cache: u128 = 0;
+        let mut raw_resource_cache: u128 = 0;
+        let mut raw_resource_size: u128 = 0;
+
+        for (_k, v) in content.iter() {
+            match v.resource_type {
+                ResourceType::Post => post_cache += v.size,
+                ResourceType::Page => page_cache += v.size,
+                ResourceType::Extra => {
+                    if v.is_raw {
+                        raw_resource_size += v.size;
+                        if v.is_cached {
+                            raw_resource_cache += v.size;
+                        }
+                    } else {
+                        rendered_resource_cache += v.size;
+                    }
+                }
+            }
+        }
+
+        total_post_cache += post_cache;
+        total_page_cache += page_cache;
+        total_rendered_resource_cache += rendered_resource_cache;
+        total_raw_resource_cache += raw_resource_cache;
+        total_raw_resource_size += raw_resource_size;
+
+        println!("Site loaded! post_cache={}, page_cache={}, rendered_resource_cache={}, raw_resource_cache={}, raw_resource_size={}",
+                 to_human(post_cache), to_human(page_cache), to_human(rendered_resource_cache), to_human(raw_resource_cache), to_human(raw_resource_size));
 
         sites.insert(
             path.file_name().to_str().unwrap().to_string(),
@@ -761,6 +841,9 @@ fn get_sites() -> HashMap<String, SiteState> {
             },
         );
     }
+
+    println!("{} sites loaded! post_cache={}, page_cache={}, rendered_resource_cache={}, raw_resource_cache={}, raw_resource_size={}",
+             sites.len(), to_human(total_post_cache), to_human(total_page_cache), to_human(total_rendered_resource_cache), to_human(total_raw_resource_cache), to_human(total_raw_resource_size));
 
     sites
 }
@@ -841,13 +924,17 @@ fn get_post(
     extra_context.insert("page", &resource);
     extra_context.insert("data", &site_data);
 
+    let rendered_content = render_template("post.html", tera, &html, site, extra_context)
+        .as_bytes()
+        .to_vec();
+    let size = u128::try_from(rendered_content.len()).unwrap();
+
     let content = Content {
-        content: Some(
-            render_template("post.html", tera, &html, site, extra_context)
-                .as_bytes()
-                .to_vec(),
-        ),
+        resource_type: ResourceType::Post,
+        content: Some(rendered_content),
         is_raw: false,
+        is_cached: true,
+        size,
     };
 
     Some((resource, content))
@@ -1011,9 +1098,15 @@ fn load_pages(
             date: None,
         };
 
+        let rendered_content = render_page(&resource, posts, site_data, &text, site, tera);
+        let size = u128::try_from(rendered_content.len()).unwrap();
+
         let content = Content {
-            content: Some(render_page(&resource, posts, site_data, &text, site, tera)),
+            resource_type: ResourceType::Page,
+            content: Some(rendered_content),
             is_raw: false,
+            is_cached: true,
+            size,
         };
 
         println!("Loaded page {} from {}", resource_path, resource.path);
@@ -1030,10 +1123,12 @@ fn load_extra_resources(
     tera: &mut tera::Tera,
     posts: &Vec<&Resource>,
     pages: &Vec<&Resource>,
+    raw_resource_cache_size: Option<u128>,
 ) -> (HashMap<String, Resource>, HashMap<String, Content>) {
     let mut resources = HashMap::new();
     let mut resources_content = HashMap::new();
 
+    let mut used_raw_resource_cache: u128 = 0;
     let walker = WalkDir::new(site_path).into_iter();
     for entry in walker.filter_entry(|e| !skipped(e)) {
         let path = entry.unwrap().into_path();
@@ -1053,6 +1148,8 @@ fn load_extra_resources(
         let resource_path = path_str.strip_prefix(site_prefix.as_str()).unwrap();
         let mime;
         let content;
+        let size: u128;
+        let is_cached;
         let is_raw = match extension {
             "xml" | "txt" => {
                 let mut extra_context = tera::Context::new();
@@ -1067,6 +1164,7 @@ fn load_extra_resources(
                 )
                 .as_bytes()
                 .to_vec();
+                size = u128::try_from(content.len()).unwrap();
 
                 mime = if extension == "xml" {
                     mime::XML
@@ -1074,10 +1172,13 @@ fn load_extra_resources(
                     mime::PLAIN
                 };
 
+                is_cached = true;
+
                 false
             }
             _ => {
                 content = fs::read(&path).unwrap();
+                size = u128::try_from(content.len()).unwrap();
 
                 mime = match mime::Mime::sniff(&content) {
                     Ok(m) => m,
@@ -1087,16 +1188,20 @@ fn load_extra_resources(
                     },
                 };
 
+                is_cached = raw_resource_cache_size.is_none()
+                    || used_raw_resource_cache + size < raw_resource_cache_size.unwrap();
+
                 true
             }
         };
 
+        if is_cached {
+            used_raw_resource_cache += size;
+        }
+
         println!(
-            "Loaded resource {} from {} ({} bytes={})",
-            resource_path,
-            path_str,
-            mime,
-            content.len()
+            "Loaded resource {} from {} ({} size={}). is_cached={}",
+            resource_path, path_str, mime, size, is_cached,
         );
 
         let resource = Resource {
@@ -1116,8 +1221,11 @@ fn load_extra_resources(
         resources_content.insert(
             resource_path.to_string(),
             Content {
-                content: Some(content),
+                resource_type: ResourceType::Extra,
+                content: if is_cached { Some(content) } else { None },
                 is_raw,
+                size,
+                is_cached,
             },
         );
     }
@@ -1140,6 +1248,7 @@ fn load_resources(
     site: &toml::Value,
     site_data: &HashMap<String, serde_yaml::Value>,
     tera: &mut tera::Tera,
+    raw_resource_cache_size: Option<u128>,
 ) -> (HashMap<String, Resource>, HashMap<String, Content>) {
     let (posts, posts_content) = load_posts(site_path, site, site_data, tera);
 
@@ -1149,8 +1258,14 @@ fn load_resources(
 
     let pages_list: Vec<&Resource> = pages.values().collect();
 
-    let (extra, extra_content) =
-        load_extra_resources(site_path, site, tera, &posts_list, &pages_list);
+    let (extra, extra_content) = load_extra_resources(
+        site_path,
+        site,
+        tera,
+        &posts_list,
+        &pages_list,
+        raw_resource_cache_size,
+    );
 
     let mut resources = HashMap::new();
     resources.extend(posts);
