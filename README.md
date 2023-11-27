@@ -4,19 +4,25 @@
 
 ## About
 
-**Servus** is a simple CMS / blogging engine that is fully self-contained within one executable file.
+**Servus** is a **CMS** and **personal Nostr relay** fully self-contained within one executable file.
 
-Unlike WordPress, it does not require a database nor a web server with the capability of executing server-side scripts such as PHP.
+### What?! And why??
 
-While that might sound like SSG, it is not.
+#### CMS
 
-Unlike static site generators such as Jekyll, it does not have a build step nor does it require a web server to actually serve the files.
+The CMS part is heavily inspired by [Jekyll](https://jekyllrb.com/). I used to be a big fan of Jekyll and recommended it to anyone asking for an easy way to build a website... until I realized that Jekyll, as awesome as it is, is actually not very friendly with beginners for a few reasons: 1) lack of an admin interface ("I should use an *editor* to create a file?") 2) the *build step* which takes a long time - no immediate feedback 3) needing to run a web server to serve Jekyll's output (sure, GitHub pages would also do, but even setting that up is too much for many people).
 
-However, the design is heavily influenced by Jekyll in that the posts are stored in plain text files. However, rendered HTML files are stored in memory and served directly by **Servus**.
+At the same time, these beginners that find Jekyll hard to use, think WordPress is easier. And as much as I dislike WP, I had to admit... it was 1) easier to install (copy a bunch of files, versus fighting Ruby Gems and configuring nginx) 2) had a decent admin interface 3) click "Save" and see the result live!
 
-Posting can be done using the [Nostr protocol](https://github.com/nostr-protocol/nostr)'s [Long-form Content](https://github.com/nostr-protocol/nips/blob/master/23.md) event kind, so any Nostr client compatible with NIP-23 can be used for posting.
+But I pretty much refuse to run WordPress or to recommend it to anyone. So, I had to come up with an alternative...
 
-Web pages can be read using any web browser and posts can be retrieved using RSS/Atom or by using the Nostr protocol.
+Unlike WordPress, **Servus** does not require MySQL or Apache.
+
+Unlike Jekyll, **Servus** does not have a build step, does not require nginx or even GitHub pages, does not require you messing with Ruby Gems or Docker and comes with an admin interface where you can manage your content.
+
+#### Personal Nostr Relay
+
+While I think the Nostr protocol is a step forward from RSS/Atom and ActivityPub and will eventually replace both, Nostr as a model is still unclear and widely misunderstood. People use Nostr clients to post to Nostr relays they have absolutely no control over. This model works fine for Twitter clones or messaging apps, but I like to be in control of my own data and know my data is there to stay. I want to have my own relay that is the "canonical" source of my personal data. I can post to other relays, but I don't want to depend on them still being around or still holding my data.
 
 ## Goals and non-goals
 
