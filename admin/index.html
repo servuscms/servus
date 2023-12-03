@@ -37,7 +37,7 @@
                     ws.onmessage = (e) => {
                         let r = JSON.parse(e.data);
                         if (r[0] === 'EVENT') {
-                            let post = {'content': r[2].content, 'site': site, 'persisted': true};
+                            let post = {'content': r[2].content, 'site': site, 'persisted': true, 'draft': r[2].kind === 30024};
                             for (let i = 0; i < r[2].tags.length; i++) {
                                 let tag = r[2].tags[i];
                                 if (tag[0] === 'title') {
@@ -50,7 +50,7 @@
                         }
                     };
                     ws.onopen = (e) => {
-                        ws.send(JSON.stringify(['REQ', (Math.random() + 1).toString(36).substring(2), {'kinds': [30023]}]));
+                        ws.send(JSON.stringify(['REQ', (Math.random() + 1).toString(36).substring(2), {'kinds': [30023, 30024]}]));
                     };
                 }
             }
@@ -65,13 +65,13 @@
                 return hex;
             }
 
-            function savePost(post) {
+            function savePost(post, draft) {
                 let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
                 ws.onopen = async (e) => {
                     if (post.id === undefined) {
                         post.id = post.title.toLowerCase().replace(/ /g, "-").replace(/[^\w-]+/g, "");
                     }
-                    let event = {'kind': 30023, 'content': post.content, 'tags': [['d', post.id], ['title', post.title]]};
+                    let event = {'kind': draft ? 30024 : 30023, 'content': post.content, 'tags': [['d', post.id], ['title', post.title]]};
                     event.pubkey = await window.nostr.getPublicKey();
                     event.created_at = Math.round(new Date().getTime() / 1000);
                     serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
@@ -87,7 +87,7 @@
                 ws.onopen = async (e) => {
                     let event = {'kind': 5, 'content': ""};
                     event.pubkey = await window.nostr.getPublicKey();
-                    event.tags = [['a', `30023:${event.pubkey}:${post.id}`]];
+                    event.tags = [['a', `${post.draft ? 30024 : 30023}:${event.pubkey}:${post.id}`]];
                     event.created_at = Math.round(new Date().getTime() / 1000);
                     serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
                     event.id = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", (new TextEncoder()).encode(serialized))));
@@ -99,16 +99,16 @@
         </script>
     </head>
     <body>
-        <div class="w-11/12 mx-auto" x-data="{site: null, post: null, sites: [], posts: []}" x-init="await getSites(sites); await getPosts(sites, posts)">
+        <div class="w-full mx-auto" x-data="{site: null, post: null, sites: [], posts: []}" x-init="await getSites(sites); await getPosts(sites, posts)">
             <div class="navbar bg-base-200">
                 <div class="navbar-start">
                     <a class="btn btn-ghost normal-case text-xl">Servus</a>
                 </div>
                 <div class="navbar-end">
-                    <label for="admin-drawer" class="btn btn-primary drawer-button">Admin</label>
+                    <label for="admin-drawer" class="btn btn-primary drawer-button md:hidden">Admin</label>
                 </div>
             </div>
-            <div class="drawer">
+            <div class="drawer md:drawer-open">
                 <input id="admin-drawer" type="checkbox" class="drawer-toggle" />
                 <div class="drawer-content flex flex-col items-center justify-center">
                     <template x-if="post">
@@ -137,7 +137,8 @@
                             <div class="w-full flex justify-center items-center mt-2">
                                 <div class="w-full flex justify-center items-center gap-2">
                                     <div class="w-1/2 flex flex-row gap-2">
-                                        <button x-on:click="savePost(post); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
+                                        <button x-on:click="savePost(post, false); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
+                                        <button x-on:click="savePost(post, true); post = null; site = null;" class="btn btn-primary mt-1">Save draft</button>
                                         <button x-on:click="if (!post.persisted) posts = posts.slice(0, -1); site = null; post = null" class="btn mt-1">Cancel</button>
                                     </div>
                                     <template x-if="post.id !== undefined && post.persisted">
@@ -179,7 +180,14 @@
                                     <ul class="p-4 bg-base-200 text-base-content">
                                         <template x-for="p in posts">
                                             <template x-if="p.site.domain === s.domain">
-                                                <li><a x-text="p.title" x-on:click="post = p; site = s;"></a></li>
+                                                <li>
+                                                    <span>
+                                                        <template x-if="p.draft">
+                                                            <span class="badge badge-primary">draft</span>
+                                                        </template>
+                                                        <a x-text="p.title" x-on:click="alert(p);post = p; site = s;"></a>
+                                                    </span>
+                                                </li>
                                             </template>
                                         </template>
                                     </ul>

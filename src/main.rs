@@ -157,63 +157,77 @@ fn add_post_via_nostr(site_state: &SiteState, event: &nostr::Event) {
     let mut front_matter = HashMap::<String, serde_yaml::Value>::new();
     front_matter.insert("title".to_string(), serde_yaml::Value::String(title));
 
+    let is_draft = event.kind == nostr::EVENT_KIND_LONG_FORM_DRAFT;
+
     let mut posts_path = PathBuf::from(&site_state.path);
-    posts_path.push("_posts/");
-    let base_filename = format!("{}-{}", published_at.format("%Y-%m-%d"), &slug);
+    posts_path.push(if is_draft { "_drafts/" } else { "_posts/" });
 
-    let mut path = PathBuf::from(&posts_path);
-    path.push(format!("{}.md", base_filename));
+    let base_filename;
+    let mut path;
 
-    let post = Resource {
-        resource_type: ResourceType::Post,
-        path: path.display().to_string(),
-        url: get_post_url(&site_state.site, &slug),
-        mime: format!("{}", mime::HTML),
-        redirect_to: None,
-        summary,
-        front_matter: front_matter.to_owned(),
-        inner_html: None,
-        slug: Some(slug.to_owned()),
-        date: Some(published_at),
-    };
-    let mut extra_context = tera::Context::new();
-    extra_context.insert("page", &post);
-    extra_context.insert("data", &site_state.site_data);
+    if !is_draft {
+        base_filename = format!("{}-{}", published_at.format("%Y-%m-%d"), &slug);
 
-    let html = md_to_html(&event.content);
+        path = PathBuf::from(&posts_path);
+        path.push(format!("{}.md", base_filename));
 
-    let resource_path = post.url.to_owned();
+        let post = Resource {
+            resource_type: ResourceType::Post,
+            path: path.display().to_string(),
+            url: get_post_url(&site_state.site, &slug.to_owned()),
+            mime: format!("{}", mime::HTML),
+            redirect_to: None,
+            summary,
+            front_matter: front_matter.to_owned(),
+            inner_html: None,
+            slug: Some(slug.to_owned()),
+            date: Some(published_at),
+        };
+        let mut extra_context = tera::Context::new();
+        extra_context.insert("page", &post);
+        extra_context.insert("data", &site_state.site_data);
 
-    let mut resources = site_state.resources.write().unwrap();
-    resources.insert(resource_path.clone(), post);
+        let html = md_to_html(&event.content);
 
-    let content = render_template(
-        "post.html",
-        &mut site_state.tera.write().unwrap(),
-        &html,
-        &site_state.site,
-        extra_context,
-    )
-    .as_bytes()
-    .to_vec();
-    let size = u128::try_from(content.len()).unwrap();
+        let resource_path = post.url.to_owned();
 
-    let post_content = Content {
-        resource_type: ResourceType::Post,
-        content: Some(content),
-        is_raw: false,
-        is_cached: true,
-        size,
-    };
+        let mut resources = site_state.resources.write().unwrap();
+        resources.insert(resource_path.clone(), post);
 
-    let mut site_content = site_state.content.write().unwrap();
-    site_content.insert(resource_path, post_content);
+        let content = render_template(
+            "post.html",
+            &mut site_state.tera.write().unwrap(),
+            &html,
+            &site_state.site,
+            extra_context,
+        )
+        .as_bytes()
+        .to_vec();
+        let size = u128::try_from(content.len()).unwrap();
 
-    for c in site_content.values_mut() {
-        if !c.is_raw {
-            c.content = None;
+        let post_content = Content {
+            resource_type: ResourceType::Post,
+            content: Some(content),
+            is_raw: false,
+            is_cached: true,
+            size,
+        };
+
+        let mut site_content = site_state.content.write().unwrap();
+        site_content.insert(resource_path, post_content);
+
+        for c in site_content.values_mut() {
+            if !c.is_raw {
+                c.content = None;
+            }
         }
+    } else {
+        base_filename = slug.clone();
+        path = PathBuf::from(&posts_path);
+        path.push(format!("{}.md", base_filename));
     }
+
+    fs::create_dir_all(&posts_path).unwrap();
 
     let mut file = fs::File::create(path).unwrap();
     file.write_all(b"---\n").unwrap();
@@ -257,38 +271,61 @@ fn remove_post_via_nostr(site_state: &SiteState, deletion_event: &nostr::Event) 
         return false;
     }
 
-    if parts[0].parse::<u64>().unwrap() != nostr::EVENT_KIND_LONG_FORM {
+    let deleted_event_kind = parts[0].parse::<u64>().unwrap();
+    if deleted_event_kind != nostr::EVENT_KIND_LONG_FORM
+        && deleted_event_kind != nostr::EVENT_KIND_LONG_FORM_DRAFT
+    {
         return false;
     }
 
+    let is_draft = deleted_event_kind == nostr::EVENT_KIND_LONG_FORM_DRAFT;
+
     let slug = parts[2].to_owned();
 
-    let mut resource_url: Option<String> = None;
-    let mut resource_path: Option<String> = None;
-    {
-        let slug = Some(slug.to_owned());
-        for post in get_posts_list(&site_state.resources.read().unwrap()) {
-            if post.slug == slug {
-                resource_url = Some(post.url.to_owned());
-                resource_path = Some(post.path.to_owned());
+    if is_draft {
+        let mut draft_path = PathBuf::from(&site_state.path);
+        draft_path.push("_drafts/");
+        draft_path.push(format!("{}.md", slug));
+        if std::fs::remove_file(&draft_path).is_ok() {
+            draft_path.set_extension("json");
+            std::fs::remove_file(draft_path).unwrap();
+            log::info!("Removed draft: {}.", &slug);
+
+            true
+        } else {
+            log::info!("Draft not found: {}.", &slug);
+
+            false
+        }
+    } else {
+        let mut resource_url: Option<String> = None;
+        let mut resource_path: Option<String> = None;
+        {
+            let slug = Some(slug.to_owned());
+            for post in get_posts_list(&site_state.resources.read().unwrap()) {
+                if post.slug == slug {
+                    resource_url = Some(post.url.to_owned());
+                    resource_path = Some(post.path.to_owned());
+                }
             }
         }
-    }
 
-    if let (Some(resource_url), Some(resource_path)) = (resource_url, resource_path) {
-        site_state.resources.write().unwrap().remove(&resource_url);
-        site_state.content.write().unwrap().remove(&resource_url);
+        if let (Some(resource_url), Some(resource_path)) = (resource_url, resource_path) {
+            site_state.resources.write().unwrap().remove(&resource_url);
+            site_state.content.write().unwrap().remove(&resource_url);
 
-        std::fs::remove_file(&resource_path).unwrap();
-        std::fs::remove_file(Path::new(&resource_path).with_extension("json").as_path()).unwrap();
+            std::fs::remove_file(&resource_path).unwrap();
+            std::fs::remove_file(Path::new(&resource_path).with_extension("json").as_path())
+                .unwrap();
 
-        log::info!("Removed post: {}.", &slug);
+            log::info!("Removed post: {}.", &slug);
 
-        true
-    } else {
-        log::info!("Post not found: {}.", &slug);
+            true
+        } else {
+            log::info!("Post not found: {}.", &slug);
 
-        false
+            false
+        }
     }
 }
 
@@ -367,7 +404,9 @@ async fn handle_websocket(
                     continue;
                 }
 
-                if cmd.event.kind == nostr::EVENT_KIND_LONG_FORM {
+                if cmd.event.kind == nostr::EVENT_KIND_LONG_FORM
+                    || cmd.event.kind == nostr::EVENT_KIND_LONG_FORM_DRAFT
+                {
                     {
                         let host = request.host().unwrap().to_string();
                         let sites = request.state().sites.read().unwrap();
@@ -409,7 +448,9 @@ async fn handle_websocket(
                 }
             }
             nostr::Message::Req(cmd) => {
-                let mut posts_subscription: Option<String> = None;
+                let mut query_posts = false;
+                let mut query_drafts = false;
+
                 for (filter_by, filter) in &cmd.filter.extra {
                     if filter_by != "kinds" {
                         log::info!("Ignoring unknown filter: {}.", filter_by);
@@ -422,28 +463,24 @@ async fn handle_websocket(
                         .map(|f| f.as_u64().unwrap())
                         .collect::<Vec<u64>>();
                     if filter_values.contains(&nostr::EVENT_KIND_LONG_FORM) {
-                        posts_subscription = Some(cmd.subscription_id.to_owned());
-                    } else {
-                        log::info!(
-                            "Ignoring subscription for unknown kinds: {}.",
-                            filter_values
-                                .iter()
-                                .map(|f| f.to_string())
-                                .collect::<Vec<String>>()
-                                .join(", ")
-                        );
-                        continue;
+                        query_posts = true;
+                    }
+                    if filter_values.contains(&nostr::EVENT_KIND_LONG_FORM_DRAFT) {
+                        query_drafts = true;
                     }
                 }
-                if let Some(subscription_id) = posts_subscription {
-                    let mut events: Vec<nostr::Event> = vec![];
-                    {
-                        let host = request.host().unwrap().to_string();
-                        let sites = request.state().sites.read().unwrap();
-                        if !sites.contains_key(&host) {
-                            return Ok(());
-                        };
-                        let site_resources = sites.get(&host).unwrap().resources.read().unwrap();
+
+                let mut events: Vec<nostr::Event> = vec![];
+
+                if query_posts || query_drafts {
+                    let host = request.host().unwrap().to_string();
+                    let sites = request.state().sites.read().unwrap();
+                    if !sites.contains_key(&host) {
+                        return Ok(());
+                    };
+                    let site = sites.get(&host).unwrap();
+                    if query_posts {
+                        let site_resources = site.resources.read().unwrap();
                         for post in get_posts_list(&site_resources) {
                             let mut path = PathBuf::from(&post.path);
                             path.set_extension("json");
@@ -453,30 +490,46 @@ async fn handle_websocket(
                             }
                         }
                     }
-
-                    for event in &events {
-                        ws.send_json(&json!([
-                            serde_json::Value::String("EVENT".to_string()),
-                            serde_json::Value::String(subscription_id.to_string()),
-                            event.to_json(),
-                        ]))
-                        .await
-                        .unwrap();
+                    if query_drafts {
+                        let mut drafts_path = PathBuf::from(&site.path);
+                        drafts_path.push("_drafts/");
+                        let drafts = match fs::read_dir(drafts_path) {
+                            Ok(paths) => paths.map(|r| r.unwrap()).collect(),
+                            _ => vec![],
+                        };
+                        for draft in &drafts {
+                            if draft.path().extension().unwrap().to_str().unwrap() == "json" {
+                                if let Ok(json) = fs::read_to_string(&draft.path()) {
+                                    let event: nostr::Event = serde_json::from_str(&json).unwrap();
+                                    events.push(event);
+                                }
+                            }
+                        }
                     }
-                    ws.send_json(&json!(vec!["EOSE", &subscription_id]))
-                        .await
-                        .unwrap();
-
-                    log::info!(
-                        "Sent {} events back for subscription {}.",
-                        events.len(),
-                        subscription_id
-                    );
-
-                    // TODO: At this point we should save the subscription and notify this client later if other posts appear.
-                    // For that, we probably need to introduce a dispatcher thread.
-                    // See: https://stackoverflow.com/questions/35673702/chat-using-rust-websocket/35785414#35785414
                 }
+
+                for event in &events {
+                    ws.send_json(&json!([
+                        serde_json::Value::String("EVENT".to_string()),
+                        serde_json::Value::String(cmd.subscription_id.to_string()),
+                        event.to_json(),
+                    ]))
+                    .await
+                    .unwrap();
+                }
+                ws.send_json(&json!(vec!["EOSE", &cmd.subscription_id.to_string()]))
+                    .await
+                    .unwrap();
+
+                log::info!(
+                    "Sent {} events back for subscription {}.",
+                    events.len(),
+                    cmd.subscription_id
+                );
+
+                // TODO: At this point we should save the subscription and notify this client later if other posts appear.
+                // For that, we probably need to introduce a dispatcher thread.
+                // See: https://stackoverflow.com/questions/35673702/chat-using-rust-websocket/35785414#35785414
             }
             nostr::Message::Close(_cmd) => {
                 // Nothing to do here, since we don't actually store subscriptions!
