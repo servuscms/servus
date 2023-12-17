@@ -130,22 +130,17 @@ Each of these "sites" has the following structure:
 ├── _posts
 │   ├── <EVENT_ID>.md
 │   └── ...
-├── atom.xml
 ├── favicon.ico
 ├── index.md
-├── robots.txt
-└── sitemap.xml
 ```
 
 Files and directories starting with "." are ignored.
 
 Files and directories starting with "_" have special meaning: `_config.toml`, `_data`, `_layouts`, `_posts`.
 
-Anything else is considered a "resource" that will be served to the clients requesting it - regardless of the name - whether it is a binary file (like `favicon.ico`) or a text file (like `atom.xml`).
+Anything else is considered a "resource" that will be served to the clients requesting it - regardless of the name.
 
 Files ending in `.md` are rendered to HTML first, injected into a *layout* and served as HTML.
-
-Files ending in `.xml` or `.txt` are preprocessed using the template engine, so you can customize your `atom.xml` for example.
 
 Other files are considered "raw" and sent to the clients as they are.
 

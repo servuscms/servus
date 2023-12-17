@@ -543,6 +543,80 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
     Ok(render_and_build_response(site_state, resource_path))
 }
 
+fn render_standard_resource(
+    resource_name: &str,
+    site_state: &SiteState,
+) -> Option<(mime::Mime, String)> {
+    let site_url = site_state.site.get("url")?.as_str().unwrap();
+    let site_title = site_state.site.get("title")?.as_str().unwrap();
+    match resource_name {
+        "robots.txt" => Some((
+            mime::PLAIN,
+            format!("User-agent: *\nSitemap: {}/sitemap.xml", site_url),
+        )),
+        "sitemap.xml" => {
+            let mut response: String = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n".to_owned();
+            {
+                let site_resources = site_state.resources.read().unwrap();
+                response.push_str("<urlset xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd\" xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
+                for resource in site_resources.values() {
+                    if resource.resource_type == ResourceType::Page
+                        || resource.resource_type == ResourceType::Post
+                    {
+                        let mut url = resource.url.trim_end_matches("/index").to_owned();
+                        if url == site_url && !url.ends_with('/') {
+                            url.push('/');
+                        }
+                        response.push_str(&format!("    <url><loc>{}</loc></url>\n", url));
+                    }
+                }
+                response.push_str("</urlset>");
+            }
+            Some((mime::XML, response))
+        }
+        "atom.xml" => {
+            let mut response: String = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n".to_owned();
+            {
+                response.push_str("<feed xmlns=\"http://www.w3.org/2005/Atom\">\n");
+                response.push_str(&format!("<title>{}</title>\n", site_title));
+                response.push_str(&format!(
+                    "<link href=\"{}/atom.xml\" rel=\"self\"/>\n",
+                    site_url
+                ));
+                response.push_str(&format!("<link href=\"{}/\"/>\n", site_url));
+                response.push_str(&format!("<id>{}</id>\n", site_url));
+                let site_resources = site_state.resources.read().unwrap();
+                for resource in site_resources.values() {
+                    if resource.resource_type == ResourceType::Post {
+                        response.push_str(
+                            &format!(
+                                "<entry>
+<title>{}</title>
+<link href=\"{}\"/>
+<updated>{}</updated>
+<id>{}/{}</id>
+<content type=\"xhtml\"><div xmlns=\"http://www.w3.org/1999/xhtml\">{}</div></content>
+</entry>
+",
+                                &resource.tags.get("title").unwrap(),
+                                &resource.url,
+                                &resource.date.unwrap(),
+                                site_url,
+                                resource.slug.clone().unwrap(),
+                                &resource.inner_html.clone().unwrap().to_owned()
+                            )
+                            .to_owned(),
+                        );
+                    }
+                }
+                response.push_str("</feed>");
+            }
+            Some((mime::XML, response))
+        }
+        _ => None,
+    }
+}
+
 async fn handle_get(request: Request<State>) -> tide::Result<Response> {
     let mut path = request.param("path").unwrap();
     if path.ends_with('/') {
@@ -556,6 +630,14 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
     } else {
         return Ok(Response::new(StatusCode::NotFound));
     };
+
+    if let Some((mime, response)) = render_standard_resource(path, site_state) {
+        return Ok(Response::builder(StatusCode::Ok)
+            .content_type(mime)
+            .header("Access-Control-Allow-Origin", "*")
+            .body(response)
+            .build());
+    }
 
     let mut resource_path;
     {
@@ -1104,10 +1186,6 @@ fn load_pages(
 
 fn load_extra_resources(
     site_path: &PathBuf,
-    site: &toml::Value,
-    tera: &mut tera::Tera,
-    posts: &Vec<&Resource>,
-    pages: &Vec<&Resource>,
     raw_resource_cache_size: Option<u128>,
 ) -> (HashMap<String, Resource>, HashMap<String, Content>) {
     let mut resources = HashMap::new();
@@ -1131,54 +1209,20 @@ fn load_extra_resources(
         let extension = path.extension().unwrap().to_str().unwrap();
 
         let resource_path = path_str.strip_prefix(site_prefix.as_str()).unwrap();
-        let mime;
-        let content;
-        let size: u128;
-        let is_cached;
-        let is_raw = match extension {
-            "xml" | "txt" => {
-                let mut extra_context = tera::Context::new();
-                extra_context.insert("posts", &posts);
-                extra_context.insert("pages", &pages);
+        let content = fs::read(&path).unwrap();
+        let size = u128::try_from(content.len()).unwrap();
+        let is_raw = true;
 
-                content = render(
-                    &fs::read_to_string(&path).unwrap(),
-                    site,
-                    Some(extra_context),
-                    tera,
-                )
-                .as_bytes()
-                .to_vec();
-                size = u128::try_from(content.len()).unwrap();
-
-                mime = if extension == "xml" {
-                    mime::XML
-                } else {
-                    mime::PLAIN
-                };
-
-                is_cached = true;
-
-                false
-            }
-            _ => {
-                content = fs::read(&path).unwrap();
-                size = u128::try_from(content.len()).unwrap();
-
-                mime = match mime::Mime::sniff(&content) {
-                    Ok(m) => m,
-                    _ => match mime::Mime::from_extension(extension) {
-                        Some(m) => m,
-                        _ => mime::PLAIN,
-                    },
-                };
-
-                is_cached = raw_resource_cache_size.is_none()
-                    || used_raw_resource_cache + size < raw_resource_cache_size.unwrap();
-
-                true
-            }
+        let mime = match mime::Mime::sniff(&content) {
+            Ok(m) => m,
+            _ => match mime::Mime::from_extension(extension) {
+                Some(m) => m,
+                _ => mime::PLAIN,
+            },
         };
+
+        let is_cached = raw_resource_cache_size.is_none()
+            || used_raw_resource_cache + size < raw_resource_cache_size.unwrap();
 
         if is_cached {
             used_raw_resource_cache += size;
@@ -1241,16 +1285,7 @@ fn load_resources(
 
     let (pages, pages_content) = load_pages(site_path, site, site_data, tera, &posts_list);
 
-    let pages_list: Vec<&Resource> = pages.values().collect();
-
-    let (extra, extra_content) = load_extra_resources(
-        site_path,
-        site,
-        tera,
-        &posts_list,
-        &pages_list,
-        raw_resource_cache_size,
-    );
+    let (extra, extra_content) = load_extra_resources(site_path, raw_resource_cache_size);
 
     let mut resources = HashMap::new();
     resources.extend(posts);
