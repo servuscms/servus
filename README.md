@@ -22,7 +22,7 @@ Unlike Jekyll, **Servus** does not have a build step, does not require nginx or 
 
 #### Personal Nostr Relay
 
-While I think the Nostr protocol is a step forward from RSS/Atom and ActivityPub and will eventually replace both, Nostr as a model is still unclear and widely misunderstood. People use Nostr clients to post to Nostr relays they have absolutely no control over. This model works fine for Twitter clones or messaging apps, but I like to be in control of my own data and know my data is there to stay. I want to have my own relay that is the "canonical" source of my personal data. I can post to other relays, but I don't want to depend on them still being around or still holding my data.
+While I think the Nostr protocol is a step forward from RSS/Atom and ActivityPub and will eventually replace both, Nostr as a model is still unclear and widely misunderstood. People use Nostr clients to post to Nostr relays they have absolutely no control over. This model works fine for Twitter clones or messaging apps where you don't need long term persistence of the content, but I like to be in control of my own data and know my data is there to stay. I want to have my own relay that is the "canonical" source of my personal data. I can post to other relays, but I don't want to depend on them still being around or still holding my data.
 
 ## Goals and non-goals
 
@@ -128,7 +128,7 @@ Each of these "sites" has the following structure:
 │   ├── page.html
 │   └── post.html
 ├── _posts
-│   ├── 2022-12-30-servus.md
+│   ├── <EVENT_ID>.md
 │   └── ...
 ├── atom.xml
 ├── favicon.ico
@@ -184,17 +184,10 @@ Any custom front matter that you specify will be available under `page`. You can
 
 ## Posting
 
-You can post to your blog in three ways:
+Ways you can post to your blog:
 
-1. **Post by adding files to the *_posts* directory** - this is basically what you would do with Jekyll
-2. **Post using a 3rd party Nostr NIP-23 client**
-3. **Post using the built-in admin interface** - which is essentially a Nostr NIP-23 client
-
-## Nostr
-
-The Nostr protocol can be used for posting and retrieving posts, so you can use a Nostr client with NIP-23 support, like [Habla](https://habla.news), to post to your blog. Posts that come from Nostr have an extra `.json` file under the `_posts` directory that includes the raw Nostr event used to create (or edit) that post, which also includes the client's signature. This JSON will be returned to the clients asking for posts using Nostr's `REQ` command, so the signature will match the pubkey when the client validates it.
-
-You can also use **Servus** without Nostr in a similar way you would use Jekyll, by just editing the `.md` files under `_posts` manually, but since these files would not include a signature, they won't be returned to Nostr clients because the verification would fail would fail anyway.
+1. **Post using a 3rd party Nostr NIP-23 client** such as Habla
+2. **Post using the built-in admin interface**, which is essentially a Nostr NIP-23 client
 
 ## REST API
 

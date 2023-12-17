@@ -1,6 +1,6 @@
 use async_std::prelude::*;
 use byte_unit::Byte;
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::NaiveDateTime;
 use clap::Parser;
 use http_types::mime;
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,6 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     env, fs,
-    io::prelude::*,
     path::{Path, PathBuf},
     str,
     str::FromStr,
@@ -95,16 +94,18 @@ struct Resource {
     url: String,
     mime: String,
 
-    // only used for posts and pages
+    // only used for pages
     redirect_to: Option<String>,
+
+    // only used for posts and pages
     summary: Option<String>,
     #[serde(flatten)]
-    front_matter: HashMap<String, serde_yaml::Value>,
+    tags: HashMap<String, String>,
 
     // only used for posts
     inner_html: Option<String>,
     slug: Option<String>,
-    date: Option<NaiveDate>,
+    date: Option<NaiveDateTime>,
 }
 
 #[derive(Clone)]
@@ -133,55 +134,32 @@ fn to_human(i: u128) -> byte_unit::AdjustedByte {
 }
 
 fn add_post_via_nostr(site_state: &SiteState, event: &nostr::Event) {
-    let mut slug = String::new();
-    let mut title = String::new();
-    let mut summary = None;
-    let mut published_at = chrono::offset::Utc::now().naive_local().date();
-    for tag in &event.tags {
-        match tag[0].as_str() {
-            "d" => slug = tag[1].to_owned(),
-            "title" => title = tag[1].to_owned(),
-            "summary" => summary = Some(tag[1].to_owned()),
-            "published_at" => {
-                let secs = tag[1].parse::<i64>().unwrap();
-                published_at = NaiveDateTime::from_timestamp_opt(secs, 0).unwrap().date();
-            }
-            _ => {}
-        }
-    }
+    let maybe_slug = event.get_long_form_slug();
 
-    if slug.is_empty() || title.is_empty() {
+    if maybe_slug.is_none() {
         return;
     }
-
-    let mut front_matter = HashMap::<String, serde_yaml::Value>::new();
-    front_matter.insert("title".to_string(), serde_yaml::Value::String(title));
 
     let is_draft = event.kind == nostr::EVENT_KIND_LONG_FORM_DRAFT;
 
     let mut posts_path = PathBuf::from(&site_state.path);
     posts_path.push(if is_draft { "_drafts/" } else { "_posts/" });
+    let mut path = PathBuf::from(&posts_path);
+    path.push(format!("{}.md", event.id));
 
-    let base_filename;
-    let mut path;
-
+    let slug = maybe_slug.unwrap();
     if !is_draft {
-        base_filename = format!("{}-{}", published_at.format("%Y-%m-%d"), &slug);
-
-        path = PathBuf::from(&posts_path);
-        path.push(format!("{}.md", base_filename));
-
         let post = Resource {
             resource_type: ResourceType::Post,
             path: path.display().to_string(),
-            url: get_post_url(&site_state.site, &slug.to_owned()),
+            url: get_post_url(&site_state.site, &slug),
             mime: format!("{}", mime::HTML),
             redirect_to: None,
-            summary,
-            front_matter: front_matter.to_owned(),
+            summary: event.get_long_form_summary(),
+            tags: event.get_tags_hash(),
             inner_html: None,
             slug: Some(slug.to_owned()),
-            date: Some(published_at),
+            date: event.get_long_form_published_at(),
         };
         let mut extra_context = tera::Context::new();
         extra_context.insert("page", &post);
@@ -221,25 +199,11 @@ fn add_post_via_nostr(site_state: &SiteState, event: &nostr::Event) {
                 c.content = None;
             }
         }
-    } else {
-        base_filename = slug.clone();
-        path = PathBuf::from(&posts_path);
-        path.push(format!("{}.md", base_filename));
     }
 
     fs::create_dir_all(&posts_path).unwrap();
-
     let mut file = fs::File::create(path).unwrap();
-    file.write_all(b"---\n").unwrap();
-    serde_yaml::to_writer(&file, &front_matter).unwrap();
-    file.write_all(b"---\n").unwrap();
-    file.write_all(event.content.as_bytes()).unwrap();
-
-    let mut event_path = PathBuf::from(&posts_path);
-    event_path.push(format!("{}.json", base_filename));
-
-    let event_file = fs::File::create(event_path).unwrap();
-    serde_json::to_writer(&event_file, &event).unwrap();
+    event.write(&mut file).unwrap();
 
     log::info!("Added post: {}.", &slug);
 }
@@ -271,7 +235,7 @@ fn remove_post_via_nostr(site_state: &SiteState, deletion_event: &nostr::Event) 
         return false;
     }
 
-    let deleted_event_kind = parts[0].parse::<u64>().unwrap();
+    let deleted_event_kind = parts[0].parse::<i64>().unwrap();
     if deleted_event_kind != nostr::EVENT_KIND_LONG_FORM
         && deleted_event_kind != nostr::EVENT_KIND_LONG_FORM_DRAFT
     {
@@ -460,8 +424,8 @@ async fn handle_websocket(
                         .as_array()
                         .unwrap()
                         .iter()
-                        .map(|f| f.as_u64().unwrap())
-                        .collect::<Vec<u64>>();
+                        .map(|f| f.as_i64().unwrap())
+                        .collect::<Vec<i64>>();
                     if filter_values.contains(&nostr::EVENT_KIND_LONG_FORM) {
                         query_posts = true;
                     }
@@ -482,10 +446,7 @@ async fn handle_websocket(
                     if query_posts {
                         let site_resources = site.resources.read().unwrap();
                         for post in get_posts_list(&site_resources) {
-                            let mut path = PathBuf::from(&post.path);
-                            path.set_extension("json");
-                            if let Ok(json) = fs::read_to_string(&path) {
-                                let event: nostr::Event = serde_json::from_str(&json).unwrap();
+                            if let Some(event) = nostr::read_event(&post.path) {
                                 events.push(event);
                             }
                         }
@@ -494,15 +455,14 @@ async fn handle_websocket(
                         let mut drafts_path = PathBuf::from(&site.path);
                         drafts_path.push("_drafts/");
                         let drafts = match fs::read_dir(drafts_path) {
-                            Ok(paths) => paths.map(|r| r.unwrap()).collect(),
+                            Ok(paths) => paths
+                                .map(|r| r.unwrap().path().display().to_string())
+                                .collect(),
                             _ => vec![],
                         };
                         for draft in &drafts {
-                            if draft.path().extension().unwrap().to_str().unwrap() == "json" {
-                                if let Ok(json) = fs::read_to_string(&draft.path()) {
-                                    let event: nostr::Event = serde_json::from_str(&json).unwrap();
-                                    events.push(event);
-                                }
+                            if let Some(event) = nostr::read_event(draft) {
+                                events.push(event);
                             }
                         }
                     }
@@ -914,40 +874,9 @@ fn get_post(
     site_data: &HashMap<String, serde_yaml::Value>,
     tera: &mut tera::Tera,
 ) -> Option<(Resource, Content)> {
-    let filename = path.file_name().unwrap().to_str().unwrap();
-    let extension = path.extension().unwrap().to_str().unwrap();
-    if extension != "md" {
-        return None;
-    }
-    if filename.len() < 11 {
-        println!("Invalid filename: {}", filename);
-        return None;
-    }
+    let event = nostr::read_event(&path.display().to_string())?;
 
-    let date_part = &filename[0..10];
-    let date = match NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
-        Ok(date) => date,
-        _ => {
-            println!("Invalid date: {}. Skipping!", date_part);
-            return None;
-        }
-    };
-
-    let file_content = fs::read_to_string(path.display().to_string()).unwrap();
-
-    let (text, front_matter) = parse_front_matter(&file_content);
-    if front_matter.is_empty() {
-        println!("Empty front matter for {}. Skipping post!", path.display());
-        return None;
-    }
-
-    let html = md_to_html(&text);
-    let slug = Path::new(&filename[11..])
-        .file_stem()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
+    let html = md_to_html(&event.content);
 
     let mut summary: Option<String> = None;
     let dom = tl::parse(&html, tl::ParserOptions::default()).unwrap();
@@ -956,21 +885,19 @@ fn get_post(
         summary = Some(p.get(parser).unwrap().inner_text(parser).to_string());
     }
 
-    let redirect_to = front_matter
-        .get("redirect_to")
-        .map(|r| r.as_str().unwrap().to_owned());
+    let slug = event.get_long_form_slug()?;
 
     let resource = Resource {
         resource_type: ResourceType::Post,
         path: path.display().to_string(),
         url: get_post_url(site, &slug),
         mime: format!("{}", mime::HTML),
-        redirect_to,
+        redirect_to: None,
         summary,
-        front_matter,
+        tags: event.get_tags_hash(),
         inner_html: Some(html.to_owned()),
         slug: Some(slug),
-        date: Some(date),
+        date: Some(event.get_long_form_published_at()?),
     };
 
     let mut extra_context = tera::Context::new();
@@ -1058,8 +985,8 @@ fn render_page(
         rendered_text
     };
 
-    let layout = match resource.front_matter.get("layout") {
-        Some(layout) => format!("{}.html", layout.as_str().unwrap()),
+    let layout = match resource.tags.get("layout") {
+        Some(layout) => format!("{}.html", layout),
         _ => "page.html".to_string(),
     };
 
@@ -1138,6 +1065,11 @@ fn load_pages(
             .get("redirect_to")
             .map(|r| r.as_str().unwrap().to_owned());
 
+        let mut tags: HashMap<String, String> = HashMap::new();
+        for (k, v) in &front_matter {
+            tags.insert(k.to_owned(), v.as_str().unwrap().to_owned());
+        }
+
         let resource = Resource {
             resource_type: ResourceType::Page,
             path: path.display().to_string(),
@@ -1145,7 +1077,7 @@ fn load_pages(
             mime: format!("{}", mime::HTML),
             redirect_to,
             summary: None,
-            front_matter,
+            tags,
             inner_html: None,
             slug: None,
             date: None,
@@ -1264,7 +1196,7 @@ fn load_extra_resources(
             mime: format!("{}", mime),
             redirect_to: None,
             summary: None,
-            front_matter: HashMap::new(),
+            tags: HashMap::new(),
             inner_html: None,
             slug: None,
             date: None,
