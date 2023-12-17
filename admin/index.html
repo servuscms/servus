@@ -44,6 +44,8 @@
                                     post.title = tag[1];
                                 } else if (tag[0] === 'd') {
                                     post.id = tag[1];
+                                } else if (tag[0] === 'published_at') {
+                                    post.published_at = tag[1];
                                 }
                             }
                             posts.push(post);
@@ -71,7 +73,10 @@
                     if (post.id === undefined) {
                         post.id = post.title.toLowerCase().replace(/ /g, "-").replace(/[^\w-]+/g, "");
                     }
-                    let event = {'kind': draft ? 30024 : 30023, 'content': post.content, 'tags': [['d', post.id], ['title', post.title]]};
+                    if (post.published_at === undefined) {
+                        post.published_at = Math.floor(Date.now() / 1000).toString();
+                    }
+                    let event = {'kind': draft ? 30024 : 30023, 'content': post.content, 'tags': [['d', post.id], ['title', post.title], ['published_at', post.published_at]]};
                     event.pubkey = await window.nostr.getPublicKey();
                     event.created_at = Math.round(new Date().getTime() / 1000);
                     serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
@@ -185,7 +190,7 @@
                                                         <template x-if="p.draft">
                                                             <span class="badge badge-primary">draft</span>
                                                         </template>
-                                                        <a x-text="p.title" x-on:click="alert(p);post = p; site = s;"></a>
+                                                        <a x-text="p.title" x-on:click="post = p; site = s;"></a>
                                                     </span>
                                                 </li>
                                             </template>

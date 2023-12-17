@@ -1,11 +1,18 @@
 use bitcoin_hashes::{sha256, Hash};
+use chrono::NaiveDateTime;
 use lazy_static::lazy_static;
 use secp256k1::{schnorr, Secp256k1, VerifyOnly, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use serde_json::Value as JsonValue;
+use serde_yaml::Value as YamlValue;
 use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
+use std::str;
 use std::str::FromStr;
 use tide::log;
+use yaml_front_matter::{Document, YamlFrontMatter};
 
 pub struct InvalidEventError;
 
@@ -13,22 +20,55 @@ pub struct InvalidEventError;
 pub struct Event {
     pub id: String,
     pub pubkey: String,
-    pub created_at: u64,
-    pub kind: u64,
+    pub created_at: i64,
+    pub kind: i64,
     pub tags: Vec<Vec<String>>,
     pub content: String,
     pub sig: String,
 }
 
-pub const EVENT_KIND_DELETE: u64 = 5;
-pub const EVENT_KIND_LONG_FORM: u64 = 30023;
-pub const EVENT_KIND_LONG_FORM_DRAFT: u64 = 30024;
+pub const EVENT_KIND_DELETE: i64 = 5;
+pub const EVENT_KIND_LONG_FORM: i64 = 30023;
+pub const EVENT_KIND_LONG_FORM_DRAFT: i64 = 30024;
 
 lazy_static! {
     pub static ref SECP: Secp256k1<VerifyOnly> = Secp256k1::verification_only();
 }
 
 impl Event {
+    pub fn get_tags_hash(&self) -> HashMap<String, String> {
+        let mut tags: HashMap<String, String> = HashMap::new();
+        for t in &self.tags {
+            tags.insert(t[0].to_owned(), t[1].to_owned());
+        }
+        tags
+    }
+
+    pub fn get_long_form_tag(&self, tag: &str) -> Option<String> {
+        if self.kind != EVENT_KIND_LONG_FORM && self.kind != EVENT_KIND_LONG_FORM_DRAFT {
+            return None;
+        }
+
+        self.get_tags_hash().get(tag).cloned()
+    }
+
+    pub fn get_long_form_slug(&self) -> Option<String> {
+        self.get_long_form_tag("d")
+    }
+
+    pub fn get_long_form_summary(&self) -> Option<String> {
+        self.get_long_form_tag("summary")
+    }
+
+    pub fn get_long_form_published_at(&self) -> Option<NaiveDateTime> {
+        let ts = self
+            .get_long_form_tag("published_at")?
+            .parse::<i64>()
+            .unwrap();
+
+        NaiveDateTime::from_timestamp_opt(ts, 0)
+    }
+
     pub fn validate_sig(&self) -> Result<(), InvalidEventError> {
         let canonical = self.to_canonical();
         log::debug!("Event in canonical format: {}", &canonical);
@@ -59,7 +99,7 @@ impl Event {
         }
     }
 
-    pub fn to_json(&self) -> serde_json::Value {
+    pub fn to_json(&self) -> JsonValue {
         json!({
             "id": self.id,
             "pubkey": self.pubkey,
@@ -83,12 +123,66 @@ impl Event {
 
         serde_json::to_string(&c).unwrap()
     }
+
+    pub fn write(&self, fd: &mut fs::File) -> std::io::Result<()> {
+        writeln!(fd, "---")?;
+        writeln!(fd, "id: {}", self.id)?;
+        writeln!(fd, "pubkey: {}", self.pubkey)?;
+        writeln!(fd, "created_at: {}", self.created_at)?;
+        writeln!(fd, "kind: {}", self.kind)?;
+        writeln!(fd, "tags:")?;
+        for tag in self.tags.clone() {
+            for (i, t) in tag.iter().enumerate() {
+                if i == 0 {
+                    writeln!(fd, "- - {}", t)?;
+                } else {
+                    writeln!(fd, "  - \"{}\"", t)?;
+                }
+            }
+        }
+        writeln!(fd, "sig: {}", self.sig)?;
+        writeln!(fd, "---")?;
+        write!(fd, "{}", self.content)?;
+
+        Ok(())
+    }
+}
+
+fn get_metadata_tags(document: &Document<HashMap<String, YamlValue>>) -> Option<Vec<Vec<String>>> {
+    let mut tags: Vec<Vec<String>> = vec![];
+    for tag in document.metadata.get("tags")?.as_sequence()? {
+        let mut tag_vec: Vec<String> = vec![];
+        for t in tag.as_sequence().unwrap() {
+            tag_vec.push(t.as_str().unwrap().to_owned());
+        }
+        tags.push(tag_vec);
+    }
+
+    Some(tags)
+}
+
+pub fn read_event(path: &str) -> Option<Event> {
+    if let Ok(content) = fs::read_to_string(path) {
+        if let Ok(document) = YamlFrontMatter::parse::<HashMap<String, YamlValue>>(&content) {
+            return Some(Event {
+                id: document.metadata.get("id")?.as_str()?.to_owned(),
+                pubkey: document.metadata.get("pubkey")?.as_str()?.to_owned(),
+                created_at: document.metadata.get("created_at")?.as_i64()?,
+                kind: document.metadata.get("kind")?.as_i64()?,
+                tags: get_metadata_tags(&document)?,
+                content: document.content.to_owned(),
+                sig: document.metadata.get("sig")?.as_str()?.to_owned(),
+            });
+        }
+    }
+
+    None
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Filter {
     #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
+    pub extra: HashMap<String, JsonValue>,
 }
 
 #[derive(Serialize, Deserialize)]
