@@ -22,31 +22,35 @@ Unlike Jekyll, **Servus** does not have a build step, does not require nginx or 
 
 #### Personal Nostr Relay
 
-While I think the Nostr protocol is a step forward from RSS/Atom and ActivityPub and will eventually replace both, Nostr as a model is still unclear and widely misunderstood. People use Nostr clients to post to Nostr relays they have absolutely no control over. This model works fine for Twitter clones or messaging apps where you don't need long term persistence of the content, but I like to be in control of my own data and know my data is there to stay. I want to have my own relay that is the "canonical" source of my personal data. I can post to other relays, but I don't want to depend on them still being around or still holding my data.
+While I think the Nostr protocol is a step forward from RSS/Atom and ActivityPub and will eventually supersede both, writing apps that make use of the Nostr protocol is still widely misunderstood. People use Nostr clients to post to Nostr relays they have absolutely no control over. This model may work for Twitter clones or messaging apps where you don't need long term persistence of the content... But I want to be in control of my own data and know my data is there to stay.
+
+**Servus** is the "canonical" source of my data, which it exposes as a Nostr relay.
+
+Always remember, the *T* in Nostr stands for "transmitted". Relays are used to *relay* information, not to *store* information!
 
 ## Goals and non-goals
 
 Saying "let's build a CMS" is like saying "let's build a housing unit" in that 1) it's nothing new and 2) it is *extremely vague*. Therefore, defining the goals and non-goals of *this particular* CMS is essential for staying on track. Also, by reading these points, you can quickly decide whether Servus suits your particular needs or pick up one of the other 999 CMSes available to choose from...
 
-* **Single executable** that you can `scp` to a bare VPS and it will just work. Without Docker, without MySQL, without Python venv, without Node or PHP, without setting up an Nginx reverse proxy and whatnot... You shouldn't need any of that to self-host your personal website!
+### Goals
+
+* **Single executable** that you can `scp` to a bare VPS and it will just work. Without Docker, without MySQL, without Python venv, without Node or PHP, without setting up an nginx reverse proxy and whatnot... You shouldn't need any of that to self-host your personal website!
 * All content and settings stored as **plain text**. Except, of course, images or other media you have as content. Not in a SQL database, not in "the cloud", not in "some Nostr relays"... but in plain text files on the machine running Servus.
-* As a corolary of the above, all content and settings **are stored in a local directory** (on the machine running Servus). This means that a *full backup* is just a `rsync` command... or a `.zip` file with all your content. Download a copy of it to your laptop, edit it with your favourite editor, write a script that imports it in another CMS, search it, copy-paste parts of it to other places...
-* All content served to the readers is **plain HTML served over HTTP(S)**. No Javascript that generates the UI elements on the client side, no Javascript that queries Nostr relays or uses background HTTP requests other ways to get content from the server. What you get is a plain "website" that you can open in any web browser or even using `wget`.
+* As a corolary of the above, a *full backup* is just an `rsync` command... or a `.zip` file. Download a copy of it to your laptop, write a script that imports it to another CMS, search it, copy-paste parts of it to other places...
+* All content served to the readers is **plain HTML served over HTTP(S)**. No Javascript that generates UI elements on the client side, no Javascript that queries Nostr relays or uses background HTTP requests to get content from the server. What you get is a plain "website" that you can open in any web browser or even using `wget`.
 * The **admin interface** however is a Javascript client-side app, because signing of Nostr events has to be done by your web browser. You don't want your Nostr private key sitting around on some VPS.
 * **Support for "themes"**. *Simple* doesn't mean ugly nor does it mean it should be limited in any way. Avoiding unnecessary client-side technologies doesn't mean the websites built using Servus need to look "old school" or be limited in functionality. In fact, themes *can* use Javascript *if they want to* - for certain effects, etc. The goal is to not *require* Javascript as part of the overall architecture, not to avoid it at any cost.
-* **Multiple websites** in one instance, that can be separately administered. In fact, there will be a publicly available Servus instance that you can use if you don't want to rent out a VPS or have a computer running in your closet, although these options are preferred.
+* **Multiple websites** that can be separately administered in one instance. So you will be able to, for example, self-host your personal website, your business's website and have your uncle host his blog, all with a single Servus instance.
 
 ### Performance and limitations
 
-Defining *performance goals* is equally important to defining general goals because it also impacts architectural decisions and trade-offs.
-
 Being first and foremost a *web-based CMS* and then a *personal Nostr relay*, **the (perceived) performance for the visitors of web pages** hosted using Servus is the most important.
 
-All web pages are pre-rendered (using the theme chosen by the website's owner) so they can immediately be served when a HTTP request is received. Also, as mentioned above, the web browser does not need to run any client-side code or make any additional requests to get the full experience! Plain HTML, CSS + any images, etc... It is also very easy to put a CDN in front of Servus and make requests even faster because of this very reason (static pages with no dependence on external requests)!
+As mentioned above, the web browser does not need to run any client-side code or make any additional requests to get the full experience! Plain HTML, CSS + any images, etc... It is also very easy to put a CDN in front of Servus and make requests even faster because of this very reason (static pages with no dependence on external requests)!
 
 **Servus** does **not** aim to be a performant general-purpose Nostr relay - one that can efficiently ingest huge numbers of events, execute random queries or stream back events for subscriptions in real-time. There are others much better at that!
 
-The *Nostr relay* offered by Servus is very limited! It should be **fast to get all events belonging to a website**... but it is impossible to make more complex queries (events from multiple - or even one `authors` across websites... `since`, `until`, ...). Also, you don't get streaming of new events coming in after a query has been issued! After existing events are returned as response to a query, you get [`EOSE`](https://github.com/nostr-protocol/nips/blob/master/01.md) and the connection is closed. The client needs to open a new connection and make a new query later in the future if it wants to get new events. Sort of like RSS-over-Nostr!
+The *Nostr relay* offered by Servus is very limited! It should be **fast to get all events belonging to a website**... but it may be slow or even impossible to make more complex queries. Also, you don't get streaming of new events coming in after a query has been issued! After existing events are returned as response to a query, you get [`EOSE`](https://github.com/nostr-protocol/nips/blob/master/01.md) and the connection is closed. The client needs to open a new connection and make a new query later in the future if it wants to get new events.
 
 ## Status
 
@@ -61,7 +65,7 @@ In order to use it, you need at least some basic understanding of:
 
 You also need a VPS with SSH access where you would run **Servus** unless you are just curious and want to test it locally, which is doable, although a bit tricky due to the SSL certificates.
 
-Also keep in mind that everything changes all the time without prior notice for now...
+**Also keep in mind that everything changes all the time without prior notice!** So using it for a production website is very risky. For now...
 
 ### UI
 
@@ -81,7 +85,7 @@ Not only there is no stable UI, but there are no usable themes included.
 
 A separate repository named `themes` exists, but it is very much WIP.
 
-However, porting themes over from Jekyll should be pretty straight forward. There are a few changes required to match the directory structure required by *Servus*, after which you will start getting errors from the templating engine, which you can solve pretty easily.
+However, porting themes over from Jekyll should be relatively straight forward.
 
 ## Building
 
@@ -173,15 +177,12 @@ The following variables are passed to the templates:
 
 * `page.url` - the URL of this page
 * `page.date` - the date associated with this post
-* ...
-
-Any custom front matter that you specify will be available under `page`. You can, for example, pass `lang: en` in your page's front matter and this value will be available under `page.lang`.
 
 ## Posting
 
 Ways you can post to your blog:
 
-1. **Post using a 3rd party Nostr NIP-23 client** such as Habla
+1. **Post using a 3rd party Nostr NIP-23 client** such as [Habla](https://github.com/verbiricha/habla.news)
 2. **Post using the built-in admin interface**, which is essentially a Nostr NIP-23 client
 
 ## REST API
