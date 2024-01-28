@@ -54,7 +54,7 @@ The *Nostr relay* offered by Servus is very limited! It should be **fast to get 
 
 ## Status
 
-While **Servus** has quite a few features that may look like "advanced" and I use it personally to serve two production sites, it is also still very much experimental and definitely not for everyone - especially not for beginners!
+While **Servus** has quite a few features that may look like "advanced" and I use it personally to serve two web sites, it is also still very much experimental and definitely not for everyone - especially not for beginners!
 
 In order to use it, you need at least some basic understanding of:
 
@@ -69,7 +69,7 @@ You also need a VPS with SSH access where you would run **Servus** unless you ar
 
 ### UI
 
-It is worth mentioning, before you go any further with false expectations, that **Servus** has a very basic admin interface which is not only lacking features but also still buggy. Don't rely on it... yet!
+It is worth mentioning, before you go any further with false expectations, that **Servus** has a very basic admin interface which is not only lacking features but also very buggy. Don't rely on it... yet!
 
 ### Beginners
 
@@ -84,8 +84,6 @@ Things are definitely going to improve, but I am too busy building a solid found
 Not only there is no stable UI, but there are no usable themes included.
 
 A separate repository named `themes` exists, but it is very much WIP.
-
-However, porting themes over from Jekyll should be relatively straight forward.
 
 ## Building
 
@@ -131,7 +129,7 @@ Each of these "sites" has the following structure:
 │   ├── base.html
 │   ├── page.html
 │   └── post.html
-├── _posts
+├── _events
 │   ├── <EVENT_ID>.md
 │   └── ...
 ├── favicon.ico
@@ -140,13 +138,9 @@ Each of these "sites" has the following structure:
 
 Files and directories starting with "." are ignored.
 
-Files and directories starting with "_" have special meaning: `_config.toml`, `_data`, `_layouts`, `_posts`.
+Files and directories starting with "_" have special meaning: `_config.toml`, `_data`, `_layouts`, `_events`.
 
 Anything else is considered a "resource" that will be served to the clients requesting it - regardless of the name.
-
-Files ending in `.md` are rendered to HTML first, injected into a *layout* and served as HTML.
-
-Other files are considered "raw" and sent to the clients as they are.
 
 ## _config.toml
 
