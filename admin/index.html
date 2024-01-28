@@ -37,7 +37,7 @@
                     ws.onmessage = (e) => {
                         let r = JSON.parse(e.data);
                         if (r[0] === 'EVENT') {
-                            let post = {'content': r[2].content, 'site': site, 'persisted': true, 'draft': r[2].kind === 30024};
+                            let post = {'event_id': r[2].id, 'content': r[2].content, 'site': site, 'persisted': true, 'draft': r[2].kind === 30024};
                             for (let i = 0; i < r[2].tags.length; i++) {
                                 let tag = r[2].tags[i];
                                 if (tag[0] === 'title') {
@@ -67,16 +67,17 @@
                 return hex;
             }
 
-            function savePost(post, draft) {
+            function savePost(post, draft, published_at) {
                 let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
                 ws.onopen = async (e) => {
                     if (post.id === undefined) {
                         post.id = post.title.toLowerCase().replace(/ /g, "-").replace(/[^\w-]+/g, "");
                     }
-                    if (post.published_at === undefined) {
-                        post.published_at = Math.floor(Date.now() / 1000).toString();
+                    let tags = [['d', post.id], ['title', post.title]];
+                    if (published_at !== undefined) {
+                        tags.push(['published_at', published_at]);
                     }
-                    let event = {'kind': draft ? 30024 : 30023, 'content': post.content, 'tags': [['d', post.id], ['title', post.title], ['published_at', post.published_at]]};
+                    let event = {'kind': draft ? 30024 : 30023, 'content': post.content, 'tags': tags};
                     event.pubkey = await window.nostr.getPublicKey();
                     event.created_at = Math.round(new Date().getTime() / 1000);
                     serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
@@ -87,12 +88,12 @@
                 };
             }
 
-           function deletePost(post) {
+           function deletePost(post, event_id) {
                let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
-                ws.onopen = async (e) => {
+               ws.onopen = async (e) => {
                     let event = {'kind': 5, 'content': ""};
                     event.pubkey = await window.nostr.getPublicKey();
-                    event.tags = [['a', `${post.draft ? 30024 : 30023}:${event.pubkey}:${post.id}`]];
+                    event.tags = [['e', event_id]];
                     event.created_at = Math.round(new Date().getTime() / 1000);
                     serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
                     event.id = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", (new TextEncoder()).encode(serialized))));
@@ -142,13 +143,14 @@
                             <div class="w-full flex justify-center items-center mt-2">
                                 <div class="w-full flex justify-center items-center gap-2">
                                     <div class="w-1/2 flex flex-row gap-2">
-                                        <button x-on:click="savePost(post, false); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
-                                        <button x-on:click="savePost(post, true); post = null; site = null;" class="btn btn-primary mt-1">Save draft</button>
+                                        <button x-on:click="savePost(post, false, Math.floor(Date.now() / 1000).toString()); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
+                                        <button x-on:click="savePost(post, true, Math.floor(Date.now() / 1000).toString()); post = null; site = null;" class="btn btn-primary mt-1">Save draft</button>
+                                        <button x-on:click="savePost(post, false, undefined); post = null; site = null;" class="btn btn-primary mt-1">Save page</button>
                                         <button x-on:click="if (!post.persisted) posts = posts.slice(0, -1); site = null; post = null" class="btn mt-1">Cancel</button>
                                     </div>
                                     <template x-if="post.id !== undefined && post.persisted">
                                         <div class="w-1/2 flex flex-row-reverse">
-                                            <button x-on:click="if (confirm('Are you sure?')) { deletePost(post); post = null; site = null; await getPosts(sites, posts); }" class="btn btn-error mt-1">Delete</button>
+                                            <button x-on:click="if (confirm('Are you sure?')) { deletePost(post, post.event_id); post = null; site = null; await getPosts(sites, posts); }" class="btn btn-error mt-1">Delete</button>
                                         </div>
                                     </template>
                                 </div>
