@@ -11,6 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::str;
 use std::str::FromStr;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tide::log;
 use yaml_front_matter::{Document, YamlFrontMatter};
 
@@ -28,6 +29,7 @@ pub struct Event {
 }
 
 pub const EVENT_KIND_DELETE: i64 = 5;
+pub const EVENT_KIND_AUTH: i64 = 27235;
 pub const EVENT_KIND_LONG_FORM: i64 = 30023;
 pub const EVENT_KIND_LONG_FORM_DRAFT: i64 = 30024;
 
@@ -97,6 +99,36 @@ impl Event {
         } else {
             Err(InvalidEventError)
         }
+    }
+
+    pub fn get_nip98_pubkey(&self, url: &str, method: &str) -> Option<String> {
+        if self.validate_sig().is_err() {
+            return None;
+        }
+
+        if self.kind != EVENT_KIND_AUTH || !self.content.is_empty() {
+            return None;
+        }
+
+        let now = SystemTime::now();
+        let one_min = Duration::from_secs(60);
+        let created_at = UNIX_EPOCH + Duration::from_secs(self.created_at as u64);
+        if created_at < now && created_at.elapsed().unwrap() > one_min {
+            return None;
+        }
+        if created_at > now && created_at > now.checked_add(one_min).unwrap() {
+            return None;
+        }
+
+        let tags = self.get_tags_hash();
+        if tags.get("u")? != url {
+            return None;
+        }
+        if tags.get("method")? != method {
+            return None;
+        }
+
+        Some(self.pubkey.to_owned())
     }
 
     pub fn to_json(&self) -> JsonValue {

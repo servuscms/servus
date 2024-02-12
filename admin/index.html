@@ -7,22 +7,36 @@
             const API_BASE_URL = "%%API_BASE_URL%%";
             const WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
 
+            async function getEvent(kind, content, tags) {
+                let event = {'kind': kind, 'content': content, 'tags': tags};
+                event.pubkey = await window.nostr.getPublicKey();
+                event.created_at = Math.round(new Date().getTime() / 1000);
+                serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
+                event.id = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", (new TextEncoder()).encode(serialized))));
+                return await window.nostr.signEvent(event);
+            }
+
             async function getSites(sites) {
+                let endpoint = `${API_BASE_URL}/api/sites`;
                 sites.length = 0;
-                let pk = await window.nostr.getPublicKey();
-                let response = await fetch(`${API_BASE_URL}/api/keys/${pk}/sites`);
+                let authEvent = await getEvent(27235, "", [['u', window.location.protocol + endpoint], ['method', 'GET']]);
+                let response = await fetch(endpoint, {
+                    headers: {'Authorization': `Nostr ${btoa(JSON.stringify(authEvent))}`},
+                });
                 for (const s of await response.json()) {
                     sites.push(s);
                 }
             }
 
             async function saveSite(site) {
-                let pk = await window.nostr.getPublicKey();
-                let response = await fetch(`${API_BASE_URL}/api/keys/${pk}/sites`, {
+                let endpoint = `${API_BASE_URL}/api/sites`;
+                let authEvent = await getEvent(27235, "", [['u', window.location.protocol + endpoint], ['method', 'POST']]);
+                let response = await fetch(endpoint, {
                     method: 'POST',
                     headers: {
                         'Accept': 'application/json',
                         'Content-Type': 'application/json',
+                        'Authorization': `Nostr ${btoa(JSON.stringify(authEvent))}`,
                     },
                     body: JSON.stringify({
                         domain: site.domain,
@@ -77,13 +91,7 @@
                     if (published_at !== undefined) {
                         tags.push(['published_at', published_at]);
                     }
-                    let event = {'kind': draft ? 30024 : 30023, 'content': post.content, 'tags': tags};
-                    event.pubkey = await window.nostr.getPublicKey();
-                    event.created_at = Math.round(new Date().getTime() / 1000);
-                    serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
-                    event.id = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", (new TextEncoder()).encode(serialized))));
-                    let signedEvent = await window.nostr.signEvent(event);
-                    ws.send(JSON.stringify(['EVENT', signedEvent]));
+                    ws.send(JSON.stringify(['EVENT', await getEvent(draft ? 30024 : 30023, post.content, tags)]));
                     post.persisted = true;
                 };
             }
@@ -91,16 +99,9 @@
            function deletePost(post, event_id) {
                let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
                ws.onopen = async (e) => {
-                    let event = {'kind': 5, 'content': ""};
-                    event.pubkey = await window.nostr.getPublicKey();
-                    event.tags = [['e', event_id]];
-                    event.created_at = Math.round(new Date().getTime() / 1000);
-                    serialized = JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
-                    event.id = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", (new TextEncoder()).encode(serialized))));
-                    let signedEvent = await window.nostr.signEvent(event);
-                    ws.send(JSON.stringify(['EVENT', signedEvent]));
-                    post.persisted = false;
-                };
+                   ws.send(JSON.stringify(['EVENT', await getEvent(5, "", [['e', event_id]])]));
+                   post.persisted = false;
+               };
             }
         </script>
     </head>
