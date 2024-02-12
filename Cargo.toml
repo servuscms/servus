@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-std = { version = "1", features = ["attributes"] }
+base64 = { version = "0.21" }
 bitcoin_hashes = { version = "0.12", features = ["serde"] }
 chrono = { version = "0", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }

@@ -1,4 +1,5 @@
 use async_std::prelude::*;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::NaiveDateTime;
 use clap::Parser;
 use http_types::mime;
@@ -536,6 +537,22 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
     }
 }
 
+fn nostr_auth(request: &Request<State>) -> Option<String> {
+    let auth_header = request.header(tide::http::headers::AUTHORIZATION);
+    let parts = auth_header?.as_str().split(' ').collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return None;
+    }
+    if parts[0].to_lowercase() != "nostr" {
+        return None;
+    }
+
+    let event: nostr::Event =
+        serde_json::from_str(str::from_utf8(&STANDARD.decode(parts[1]).unwrap()).unwrap()).unwrap();
+
+    event.get_nip98_pubkey(request.url().as_str(), &request.method().to_string())
+}
+
 async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> {
     let site: Site = request.body_json().await.unwrap();
     let state = &request.state();
@@ -560,8 +577,11 @@ async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> 
         let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
         tera.autoescape_on(vec![]);
 
-        let key = request.param("key").unwrap();
-        let config_content = format!("[site]\npubkey = \"{}\"", key);
+        let key = nostr_auth(&request);
+        if key.is_none() {
+            return Ok(Response::builder(StatusCode::BadRequest).build());
+        }
+        let config_content = format!("[site]\npubkey = \"{}\"", key.unwrap());
         fs::write(
             format!("./sites/{}/_config.toml", site.domain),
             &config_content,
@@ -591,7 +611,11 @@ async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> 
 }
 
 async fn handle_list_sites(request: Request<State>) -> tide::Result<Response> {
-    let key = request.param("key").unwrap();
+    let key = nostr_auth(&request);
+    if key.is_none() {
+        return Ok(Response::builder(StatusCode::BadRequest).build());
+    }
+    let key = key.unwrap();
     let all_sites = &request.state().sites.read().unwrap();
     let sites = all_sites
         .iter()
@@ -628,8 +652,9 @@ async fn main() -> Result<(), std::io::Error> {
         .get(handle_index);
     app.at("*path").get(handle_get);
     if args.admin_domain.is_some() {
-        app.at("/api/keys/:key/sites").post(handle_new_site);
-        app.at("/api/keys/:key/sites").get(handle_list_sites);
+        app.at("/api/sites")
+            .post(handle_new_site)
+            .get(handle_list_sites);
     }
 
     let addr = "0.0.0.0";
