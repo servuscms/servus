@@ -17,7 +17,7 @@ jobs:
       uses: rust-build/rust-build.action@v1.4.3
       with:
         RUSTTARGET: x86_64-unknown-linux-musl
-        TOOLCHAIN_VERSION: 1.70.0
+        TOOLCHAIN_VERSION: 1.74.0
         UPLOAD_MODE: none
     - name: Upload artifact
       uses: actions/upload-artifact@v3
