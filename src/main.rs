@@ -1,14 +1,18 @@
-use async_std::prelude::*;
 use base64::{engine::general_purpose::STANDARD, Engine};
+use bytes::Bytes;
 use chrono::NaiveDateTime;
 use clap::Parser;
-use http_types::mime;
+use futures_util::stream::once;
+use http_types::{mime, Method};
+use multer::Multipart;
+use phf::phf_map;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::convert::Infallible;
 use std::{
     collections::HashMap,
     env, fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     str,
     str::FromStr,
     sync::{Arc, RwLock},
@@ -17,7 +21,7 @@ use tide::{http::StatusCode, log, Request, Response};
 use tide_acme::rustls_acme::caches::DirCache;
 use tide_acme::{AcmeConfig, TideRustlsExt};
 use tide_websockets::{Message, WebSocket, WebSocketConnection};
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 use yaml_front_matter::YamlFrontMatter;
 
 mod nostr;
@@ -25,6 +29,13 @@ mod nostr;
 mod admin {
     include!(concat!(env!("OUT_DIR"), "/admin.rs"));
 }
+
+static FILE_EXTENSIONS: phf::Map<&'static str, &'static str> = phf_map! {
+    "image/png" => "png",
+    "image/jpeg" => "jpg",
+    "image/gif" => "gif",
+    "audio/mpeg" => "mp3",
+};
 
 #[derive(Parser)]
 struct Cli {
@@ -55,95 +66,80 @@ struct ServusMetadata {
     version: String,
 }
 
-#[derive(Clone, Serialize, Eq, PartialEq)]
-enum ResourceType {
-    Post,
-    Extra,
-}
-
 #[derive(Clone, Serialize)]
-struct Resource {
-    resource_type: ResourceType,
+struct Post {
+    event_id: String,
+    slug: String,
     path: String,
     url: String,
-    mime: String,
-
-    // only used for posts
-    event_id: Option<String>,
     summary: Option<String>,
+    inner_html: String,
+    date: Option<NaiveDateTime>,
     #[serde(flatten)]
     tags: HashMap<String, String>,
-
-    // only used for posts
-    inner_html: Option<String>,
-    slug: Option<String>,
-    date: Option<NaiveDateTime>,
 }
 
 #[derive(Clone)]
-struct SiteState {
-    site: toml::Value,
+struct Site {
     path: String,
-    site_data: HashMap<String, serde_yaml::Value>,
-    resources: Arc<RwLock<HashMap<String, Resource>>>,
+    config: toml::Value,
+    data: HashMap<String, serde_yaml::Value>,
+    posts: Arc<RwLock<HashMap<String, Post>>>,
     tera: Arc<RwLock<tera::Tera>>,
 }
 
 #[derive(Clone)]
 struct State {
     admin_domain: Option<String>,
-    sites: Arc<RwLock<HashMap<String, SiteState>>>,
+    sites: Arc<RwLock<HashMap<String, Site>>>,
 }
 
 #[derive(Deserialize, Serialize)]
-struct Site {
+struct PostSiteRequestBody {
     domain: String,
 }
 
-fn add_post_via_nostr(site_state: &SiteState, event: &nostr::Event) {
-    let maybe_slug = event.get_long_form_slug();
+fn add_post(site: &Site, event: &nostr::Event) {
+    match event.get_long_form_slug() {
+        None => (),
+        Some(slug) => {
+            let mut event_path = PathBuf::from(&site.path);
+            event_path.push("_events/");
+            fs::create_dir_all(&event_path).unwrap();
+            let mut path = PathBuf::from(&event_path);
+            path.push(format!("{}.md", event.id));
 
-    if maybe_slug.is_none() {
-        return;
+            let date = event.get_long_form_published_at();
+            if event.kind != nostr::EVENT_KIND_LONG_FORM_DRAFT {
+                let post = Post {
+                    event_id: event.id.to_owned(),
+                    slug: slug.to_owned(),
+                    path: path.display().to_string(),
+                    url: get_post_url(&site.config, &slug, date),
+                    summary: event.get_long_form_summary(),
+                    inner_html: md_to_html(&event.content),
+                    date,
+                    tags: event.get_tags_hash(),
+                };
+
+                let mut posts = site.posts.write().unwrap();
+                if posts.contains_key(&post.url) {
+                    let mut old_path = event_path;
+                    old_path.push(format!("{}.md", posts.get(&post.url).unwrap().event_id));
+                    std::fs::remove_file(&old_path).unwrap();
+                }
+                posts.insert(post.url.to_owned(), post);
+            }
+
+            let mut file = fs::File::create(path).unwrap();
+            event.write(&mut file).unwrap();
+
+            log::info!("Added post: {}.", &slug);
+        }
     }
-
-    let is_draft = event.kind == nostr::EVENT_KIND_LONG_FORM_DRAFT;
-
-    let mut events_path = PathBuf::from(&site_state.path);
-    events_path.push("_events/");
-    let mut path = PathBuf::from(&events_path);
-    path.push(format!("{}.md", event.id));
-
-    let slug = maybe_slug.unwrap();
-    let date = event.get_long_form_published_at();
-    if !is_draft {
-        let post = Resource {
-            resource_type: ResourceType::Post,
-            path: path.display().to_string(),
-            url: get_post_url(&site_state.site, &slug, date),
-            mime: format!("{}", mime::HTML),
-            event_id: Some(event.id.to_owned()),
-            summary: event.get_long_form_summary(),
-            tags: event.get_tags_hash(),
-            inner_html: None,
-            slug: Some(slug.to_owned()),
-            date,
-        };
-
-        let resource_path = post.url.to_owned();
-
-        let mut resources = site_state.resources.write().unwrap();
-        resources.insert(resource_path, post);
-    }
-
-    fs::create_dir_all(&events_path).unwrap();
-    let mut file = fs::File::create(path).unwrap();
-    event.write(&mut file).unwrap();
-
-    log::info!("Added post: {}.", &slug);
 }
 
-fn remove_post_via_nostr(site_state: &SiteState, deletion_event: &nostr::Event) -> bool {
+fn remove_post(site: &Site, deletion_event: &nostr::Event) -> bool {
     let mut deleted_event_id: Option<String> = None;
     for tag in &deletion_event.tags {
         if tag[0] == "e" {
@@ -157,35 +153,37 @@ fn remove_post_via_nostr(site_state: &SiteState, deletion_event: &nostr::Event) 
         return false;
     }
 
-    let mut event_path = PathBuf::from(&site_state.path);
+    let deleted_event_id = deleted_event_id.unwrap();
+
+    let mut event_path = PathBuf::from(&site.path);
     event_path.push("_events/");
-    event_path.push(format!("{}.md", &deleted_event_id.clone().unwrap()));
-    let mut resource_url: Option<String> = None;
+    event_path.push(format!("{}.md", &deleted_event_id.clone()));
+    let mut post_url: Option<String> = None;
     {
-        let site_resources = site_state.resources.read().unwrap();
-        for resource in site_resources.values() {
-            if resource.event_id.is_some() && resource.event_id == deleted_event_id {
-                resource_url = Some(resource.url.to_owned());
+        let site_posts = site.posts.read().unwrap();
+        for post in site_posts.values() {
+            if post.event_id == deleted_event_id {
+                post_url = Some(post.url.to_owned());
             }
         }
     }
 
-    // NB: drafts have files but no associated "resources"
-    if let Some(resource_url) = resource_url {
-        site_state.resources.write().unwrap().remove(&resource_url);
+    // NB: drafts have files but no associated Post
+    if let Some(post_url) = post_url {
+        site.posts.write().unwrap().remove(&post_url);
     }
 
     if std::fs::remove_file(&event_path).is_ok() {
-        log::info!("Removed event: {}!", &deleted_event_id.unwrap());
+        log::info!("Removed event: {}!", &deleted_event_id);
         true
     } else {
         false
     }
 }
 
-fn build_response(resource: &Resource, content: Vec<u8>) -> Response {
-    let mime = mime::Mime::from_str(resource.mime.as_str()).unwrap();
-
+fn build_raw_response(filename: &str, content: Vec<u8>) -> Response {
+    let guess = mime_guess::from_path(filename);
+    let mime = mime::Mime::from_str(guess.first().unwrap().essence_str()).unwrap();
     Response::builder(StatusCode::Ok)
         .content_type(mime)
         .header("Access-Control-Allow-Origin", "*")
@@ -193,30 +191,38 @@ fn build_response(resource: &Resource, content: Vec<u8>) -> Response {
         .build()
 }
 
-fn render_and_build_response(site_state: &SiteState, resource_path: String) -> Response {
-    let site_resources = site_state.resources.read().unwrap();
-    let resource = site_resources.get(&resource_path).unwrap();
+fn render_and_build_response(site: &Site, post_path: String) -> Response {
+    let posts = site.posts.read().unwrap();
+    let post = posts.get(&post_path).unwrap();
 
-    let file_content = fs::read_to_string(&resource.path).unwrap();
+    let file_content = fs::read_to_string(&post.path).unwrap();
     let (text, _front_matter) = parse_front_matter(&file_content);
 
-    let rendered_content;
+    let rendered_content = {
+        let mut tera = site.tera.write().unwrap();
+        let mut posts_list: Vec<&Post> = posts.values().collect();
+        posts_list.sort_by(|a, b| b.date.cmp(&a.date));
 
-    {
-        let mut tera = site_state.tera.write().unwrap();
-        let posts_list = get_posts_list(&site_resources);
-        rendered_content = render_page(
-            resource,
-            &posts_list,
-            &site_state.site_data,
-            &text,
-            &site_state.site,
-            &mut tera,
-        );
-    }
+        let mut extra_context = tera::Context::new();
+        extra_context.insert("page", post);
+        extra_context.insert("posts", &posts_list);
+        extra_context.insert("data", &site.data);
+
+        let rendered_text = render(&text, &site.config, Some(extra_context.clone()), &mut tera);
+        let html = md_to_html(&rendered_text);
+        let layout = if post.date.is_some() {
+            "post.html".to_string()
+        } else {
+            "page.html".to_string()
+        };
+
+        render_template(&layout, &mut tera, &html, &site.config, extra_context)
+            .as_bytes()
+            .to_vec()
+    };
 
     Response::builder(StatusCode::Ok)
-        .content_type(mime::Mime::from_str(resource.mime.as_str()).unwrap())
+        .content_type(mime::HTML)
         .header("Access-Control-Allow-Origin", "*")
         .body(&*rendered_content)
         .build()
@@ -226,7 +232,7 @@ async fn handle_websocket(
     request: Request<State>,
     mut ws: WebSocketConnection,
 ) -> tide::Result<()> {
-    while let Some(Ok(Message::Text(message))) = ws.next().await {
+    while let Some(Ok(Message::Text(message))) = async_std::stream::StreamExt::next(&mut ws).await {
         let parsed: nostr::Message = serde_json::from_str(&message).unwrap();
         match parsed {
             nostr::Message::Event(cmd) => {
@@ -236,7 +242,7 @@ async fn handle_websocket(
                     if !sites.contains_key(&host) {
                         return Ok(());
                     }
-                    if let Some(site_pubkey) = sites.get(&host).unwrap().site.get("pubkey") {
+                    if let Some(site_pubkey) = sites.get(&host).unwrap().config.get("pubkey") {
                         if cmd.event.pubkey != site_pubkey.as_str().unwrap() {
                             log::info!("Ignoring event for unknown pubkey: {}.", cmd.event.pubkey);
                             continue;
@@ -261,7 +267,7 @@ async fn handle_websocket(
                         if !sites.contains_key(&host) {
                             return Ok(());
                         }
-                        add_post_via_nostr(sites.get(&host).unwrap(), &cmd.event);
+                        add_post(sites.get(&host).unwrap(), &cmd.event);
                     }
                     ws.send_json(&json!(vec![
                         serde_json::Value::String("OK".to_string()),
@@ -279,7 +285,7 @@ async fn handle_websocket(
                         if !sites.contains_key(&host) {
                             return Ok(());
                         }
-                        post_removed = remove_post_via_nostr(sites.get(&host).unwrap(), &cmd.event);
+                        post_removed = remove_post(sites.get(&host).unwrap(), &cmd.event);
                     }
 
                     ws.send_json(&json!(vec![
@@ -329,8 +335,10 @@ async fn handle_websocket(
                     };
                     let site = sites.get(&host).unwrap();
                     if query_posts {
-                        let site_resources = site.resources.read().unwrap();
-                        for post in get_posts_list(&site_resources) {
+                        let posts = site.posts.read().unwrap();
+                        let mut posts_list: Vec<&Post> = posts.values().collect();
+                        posts_list.sort_by(|a, b| b.date.cmp(&a.date));
+                        for post in posts_list {
                             if let Some(event) = nostr::read_event(&post.path) {
                                 events.push(event);
                             }
@@ -403,67 +411,59 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
 
     let host = request.host().unwrap().to_string();
     let sites = state.sites.read().unwrap();
-    let site_state = if sites.contains_key(&host) {
+    let site = if sites.contains_key(&host) {
         sites.get(&host).unwrap()
     } else {
         return Ok(Response::new(StatusCode::NotFound));
     };
-    let resource_path = "/index".to_string();
+
     {
-        let site_resources = site_state.resources.read().unwrap();
-        match site_resources.get(&resource_path) {
-            Some(..) => Ok(render_and_build_response(site_state, resource_path)),
+        let posts = site.posts.read().unwrap();
+        match posts.get("/index") {
+            Some(..) => Ok(render_and_build_response(site, "/index".to_owned())),
             None => Ok(Response::new(StatusCode::NotFound)),
         }
     }
 }
 
-fn render_standard_resource(
-    resource_name: &str,
-    site_state: &SiteState,
-) -> Option<(mime::Mime, String)> {
-    let site_url = site_state.site.get("url")?.as_str().unwrap();
-    let site_title = site_state.site.get("title")?.as_str().unwrap();
-    match resource_name {
-        "robots.txt" => Some((
-            mime::PLAIN,
-            format!("User-agent: *\nSitemap: {}/sitemap.xml", site_url),
-        )),
-        "sitemap.xml" => {
-            let mut response: String = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n".to_owned();
-            {
-                let site_resources = site_state.resources.read().unwrap();
-                response.push_str("<urlset xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd\" xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
-                for resource in site_resources.values() {
-                    if resource.resource_type == ResourceType::Post {
-                        let mut url = resource.url.trim_end_matches("/index").to_owned();
-                        if url == site_url && !url.ends_with('/') {
-                            url.push('/');
-                        }
-                        response.push_str(&format!("    <url><loc>{}</loc></url>\n", url));
-                    }
-                }
-                response.push_str("</urlset>");
-            }
-            Some((mime::XML, response))
+fn render_robots_txt(site_url: &str) -> (mime::Mime, String) {
+    let content = format!("User-agent: *\nSitemap: {}/sitemap.xml", site_url);
+    (mime::PLAIN, content)
+}
+
+fn render_sitemap_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
+    let mut response: String = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n".to_owned();
+    let posts = site.posts.read().unwrap();
+    response.push_str("<urlset xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd\" xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
+    for post in posts.values() {
+        let mut url = post.url.trim_end_matches("/index").to_owned();
+        if url == site_url && !url.ends_with('/') {
+            url.push('/');
         }
-        "atom.xml" => {
-            let mut response: String = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n".to_owned();
-            {
-                response.push_str("<feed xmlns=\"http://www.w3.org/2005/Atom\">\n");
-                response.push_str(&format!("<title>{}</title>\n", site_title));
-                response.push_str(&format!(
-                    "<link href=\"{}/atom.xml\" rel=\"self\"/>\n",
-                    site_url
-                ));
-                response.push_str(&format!("<link href=\"{}/\"/>\n", site_url));
-                response.push_str(&format!("<id>{}</id>\n", site_url));
-                let site_resources = site_state.resources.read().unwrap();
-                for resource in site_resources.values() {
-                    if resource.resource_type == ResourceType::Post && resource.date.is_some() {
-                        response.push_str(
-                            &format!(
-                                "<entry>
+        response.push_str(&format!("    <url><loc>{}</loc></url>\n", url));
+    }
+    response.push_str("</urlset>");
+
+    (mime::XML, response)
+}
+
+fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
+    let site_title = site.config.get("title").unwrap().as_str().unwrap();
+    let mut response: String = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n".to_owned();
+    response.push_str("<feed xmlns=\"http://www.w3.org/2005/Atom\">\n");
+    response.push_str(&format!("<title>{}</title>\n", site_title));
+    response.push_str(&format!(
+        "<link href=\"{}/atom.xml\" rel=\"self\"/>\n",
+        site_url
+    ));
+    response.push_str(&format!("<link href=\"{}/\"/>\n", site_url));
+    response.push_str(&format!("<id>{}</id>\n", site_url));
+    let posts = site.posts.read().unwrap();
+    for post in posts.values() {
+        if post.date.is_some() {
+            response.push_str(
+                &format!(
+                    "<entry>
 <title>{}</title>
 <link href=\"{}\"/>
 <updated>{}</updated>
@@ -471,21 +471,28 @@ fn render_standard_resource(
 <content type=\"xhtml\"><div xmlns=\"http://www.w3.org/1999/xhtml\">{}</div></content>
 </entry>
 ",
-                                &resource.tags.get("title").unwrap(),
-                                &resource.url,
-                                &resource.date.unwrap(),
-                                site_url,
-                                resource.slug.clone().unwrap(),
-                                &resource.inner_html.clone().unwrap().to_owned()
-                            )
-                            .to_owned(),
-                        );
-                    }
-                }
-                response.push_str("</feed>");
-            }
-            Some((mime::XML, response))
+                    &post.tags.get("title").unwrap(),
+                    &post.url,
+                    &post.date.unwrap(),
+                    site_url,
+                    post.slug.clone(),
+                    &post.inner_html.to_owned()
+                )
+                .to_owned(),
+            );
         }
+    }
+    response.push_str("</feed>");
+
+    (mime::XML, response)
+}
+
+fn render_standard_resource(resource_name: &str, site: &Site) -> Option<(mime::Mime, String)> {
+    let site_url = site.config.get("url")?.as_str().unwrap();
+    match resource_name {
+        "robots.txt" => Some(render_robots_txt(site_url)),
+        "sitemap.xml" => Some(render_sitemap_xml(site_url, site)),
+        "atom.xml" => Some(render_atom_xml(site_url, site)),
         _ => None,
     }
 }
@@ -503,9 +510,9 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
         return Ok(Response::new(StatusCode::NotFound));
     }
 
-    let site_state = sites.get(&host).unwrap();
+    let site = sites.get(&host).unwrap();
 
-    if let Some((mime, response)) = render_standard_resource(path, site_state) {
+    if let Some((mime, response)) = render_standard_resource(path, site) {
         return Ok(Response::builder(StatusCode::Ok)
             .content_type(mime)
             .header("Access-Control-Allow-Origin", "*")
@@ -513,26 +520,28 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
             .build());
     }
 
-    let mut resource_path;
+    let existing_posts: Vec<String>;
     {
-        let site_resources = site_state.resources.read().unwrap();
-        resource_path = format!("/{}", &path);
-        match site_resources.get(&resource_path) {
-            Some(resource) => {
-                if resource.resource_type == ResourceType::Extra {
-                    let raw_content = fs::read(&resource.path).unwrap();
-                    Ok(build_response(resource, raw_content))
-                } else {
-                    Ok(render_and_build_response(site_state, resource_path))
+        let posts = site.posts.read().unwrap();
+        existing_posts = posts.keys().cloned().collect();
+    }
+    let mut resource_path = format!("/{}", &path);
+    if existing_posts.contains(&resource_path) {
+        Ok(render_and_build_response(site, resource_path))
+    } else {
+        resource_path = format!("{}/index", &resource_path);
+        if existing_posts.contains(&resource_path) {
+            Ok(render_and_build_response(site, resource_path))
+        } else {
+            resource_path = format!("{}/{}", site.path, path);
+            for part in resource_path.split('/').collect::<Vec<_>>() {
+                let first_char = part.chars().next().unwrap();
+                if first_char == '_' || (first_char == '.' && part.len() > 1) {
+                    return Ok(Response::builder(StatusCode::NotFound).build());
                 }
             }
-            None => {
-                resource_path = format!("/{}/index", &path);
-                return match site_resources.get(&resource_path) {
-                    Some(..) => Ok(render_and_build_response(site_state, resource_path)),
-                    None => Ok(Response::new(StatusCode::NotFound)),
-                };
-            }
+            let raw_content = fs::read(&resource_path).unwrap();
+            Ok(build_raw_response(&resource_path, raw_content))
         }
     }
 }
@@ -550,11 +559,15 @@ fn nostr_auth(request: &Request<State>) -> Option<String> {
     let event: nostr::Event =
         serde_json::from_str(str::from_utf8(&STANDARD.decode(parts[1]).unwrap()).unwrap()).unwrap();
 
-    event.get_nip98_pubkey(request.url().as_str(), &request.method().to_string())
+    event.get_nip98_pubkey(request.url().as_str(), request.method().as_ref())
 }
 
-async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> {
-    let site: Site = request.body_json().await.unwrap();
+async fn handle_post_site(mut request: Request<State>) -> tide::Result<Response> {
+    let domain = request
+        .body_json::<PostSiteRequestBody>()
+        .await
+        .unwrap()
+        .domain;
     let state = &request.state();
 
     if state.admin_domain.is_none() {
@@ -567,12 +580,11 @@ async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> 
         return Ok(Response::builder(StatusCode::NotFound).build());
     }
 
-    if state.sites.read().unwrap().contains_key(&site.domain) {
+    if state.sites.read().unwrap().contains_key(&domain) {
         Ok(Response::builder(StatusCode::Conflict).build())
     } else {
-        let path = format!("./sites/{}", site.domain);
+        let path = format!("./sites/{}", domain);
         fs::create_dir_all(&path).unwrap();
-        fs::create_dir_all(format!("./sites/{}/_events", site.domain)).unwrap();
 
         let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
         tera.autoescape_on(vec![]);
@@ -581,24 +593,23 @@ async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> 
         if key.is_none() {
             return Ok(Response::builder(StatusCode::BadRequest).build());
         }
-        let config_content = format!("[site]\npubkey = \"{}\"", key.unwrap());
-        fs::write(
-            format!("./sites/{}/_config.toml", site.domain),
-            &config_content,
-        )
-        .unwrap();
 
-        let config: HashMap<String, toml::Value> = toml::from_str(&config_content).unwrap();
-        let site_config = config.get("site").unwrap();
+        let config_content = format!(
+            "[site]\npubkey = \"{}\"\nurl = \"https://{}\"",
+            key.unwrap(),
+            domain
+        );
+        fs::write(format!("./sites/{}/_config.toml", domain), &config_content).unwrap();
 
+        let site_config = toml::from_str::<HashMap<String, toml::Value>>(&config_content).unwrap();
         let sites = &mut state.sites.write().unwrap();
         sites.insert(
-            site.domain,
-            SiteState {
-                site: site_config.clone(),
+            domain,
+            Site {
+                config: site_config.get("site").unwrap().clone(),
                 path,
-                site_data: HashMap::new(),
-                resources: Arc::new(RwLock::new(HashMap::new())),
+                data: HashMap::new(),
+                posts: Arc::new(RwLock::new(HashMap::new())),
                 tera: Arc::new(RwLock::new(tera)),
             },
         );
@@ -610,7 +621,7 @@ async fn handle_new_site(mut request: Request<State>) -> tide::Result<Response> 
     }
 }
 
-async fn handle_list_sites(request: Request<State>) -> tide::Result<Response> {
+async fn handle_get_sites(request: Request<State>) -> tide::Result<Response> {
     let key = nostr_auth(&request);
     if key.is_none() {
         return Ok(Response::builder(StatusCode::BadRequest).build());
@@ -620,7 +631,7 @@ async fn handle_list_sites(request: Request<State>) -> tide::Result<Response> {
     let sites = all_sites
         .iter()
         .filter_map(|s| {
-            let pk = s.1.site.get("pubkey")?;
+            let pk = s.1.config.get("pubkey")?;
             if pk.as_str().unwrap() == key {
                 Some(HashMap::from([("domain", s.0)]))
             } else {
@@ -632,6 +643,99 @@ async fn handle_list_sites(request: Request<State>) -> tide::Result<Response> {
     Ok(Response::builder(StatusCode::Ok)
         .content_type(mime::JSON)
         .body(json!(sites).to_string())
+        .build())
+}
+
+async fn handle_post_file(mut request: Request<State>) -> tide::Result<Response> {
+    if request.method() == Method::Options {
+        return Ok(Response::builder(StatusCode::Ok)
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Headers", "Authorization")
+            .build());
+    }
+
+    let site_path = {
+        let host = request.host().unwrap().to_string();
+        let sites = request.state().sites.read().unwrap();
+        if !sites.contains_key(&host) {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        };
+
+        let site = sites.get(&host).unwrap();
+
+        if let Some(pubkey) = nostr_auth(&request) {
+            if let Some(site_pubkey) = site.config.get("pubkey") {
+                if site_pubkey.as_str().unwrap() != pubkey {
+                    return Ok(Response::builder(StatusCode::Unauthorized)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .build());
+                }
+            } else {
+                return Ok(Response::builder(StatusCode::Unauthorized)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .build());
+            }
+        } else {
+            return Ok(Response::builder(StatusCode::Unauthorized)
+                .header("Access-Control-Allow-Origin", "*")
+                .build());
+        }
+
+        site.path.clone()
+    };
+
+    let content_type = request
+        .header(tide::http::headers::CONTENT_TYPE)
+        .unwrap()
+        .as_str();
+    let boundary_index = content_type.find("boundary=").unwrap();
+    let boundary: String = content_type
+        .chars()
+        .skip(boundary_index)
+        .skip(String::from("boundary=").len())
+        .collect();
+
+    let bytes = request.body_bytes().await?;
+    let stream = once(async move { Result::<Bytes, Infallible>::Ok(Bytes::from(bytes)) });
+
+    let mut multipart = Multipart::new(stream, boundary);
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        if field.name().unwrap() == "file" {
+            let content = field.bytes().await.unwrap();
+            let hash = sha256::digest(&*content);
+            let mime = mime::Mime::sniff(&content);
+            if mime.is_err() || !FILE_EXTENSIONS.contains_key(mime.as_ref().unwrap().essence()) {
+                return Ok(Response::builder(StatusCode::BadRequest)
+                    .content_type(mime::JSON)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(json!({"status": "error", "message": "Unknown content type."}))
+                    .build());
+            }
+            let extension = FILE_EXTENSIONS.get(mime.unwrap().essence()).unwrap();
+            fs::create_dir_all(format!("{}/files", site_path)).unwrap();
+            fs::write(
+                format!("{}/files/{}.{}", site_path, hash, extension),
+                content,
+            )
+            .unwrap();
+            let url = format!(
+                "https://{}/files/{}.{}",
+                request.host().unwrap(),
+                hash,
+                extension
+            );
+            return Ok(Response::builder(StatusCode::Created)
+               .content_type(mime::JSON)
+               .header("Access-Control-Allow-Origin", "*")
+               .body(json!({"status": "success", "nip94_event": {"tags": [["url", url], ["ox", hash]]}}).to_string())
+               .build());
+        }
+    }
+
+    Ok(Response::builder(StatusCode::BadRequest)
+        .content_type(mime::JSON)
+        .header("Access-Control-Allow-Origin", "*")
+        .body(json!({"status": "error", "message": "File not found."}))
         .build())
 }
 
@@ -653,8 +757,11 @@ async fn main() -> Result<(), std::io::Error> {
     app.at("*path").get(handle_get);
     if args.admin_domain.is_some() {
         app.at("/api/sites")
-            .post(handle_new_site)
-            .get(handle_list_sites);
+            .post(handle_post_site)
+            .get(handle_get_sites);
+        app.at("/api/files")
+            .options(handle_post_file)
+            .post(handle_post_file);
     }
 
     let addr = "0.0.0.0";
@@ -704,7 +811,7 @@ async fn main() -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn load_sites() -> HashMap<String, SiteState> {
+fn load_sites() -> HashMap<String, Site> {
     let paths = match fs::read_dir("./sites") {
         Ok(paths) => paths.map(|r| r.unwrap()).collect(),
         _ => vec![],
@@ -724,9 +831,6 @@ fn load_sites() -> HashMap<String, SiteState> {
                     continue;
                 }
             };
-
-        let config: HashMap<String, toml::Value> = toml::from_str(&config_content).unwrap();
-        let site_config = config.get("site").unwrap();
 
         println!("Loading layouts...");
 
@@ -759,17 +863,20 @@ fn load_sites() -> HashMap<String, SiteState> {
             site_data.insert(data_name, data);
         }
 
-        let resources = load_resources(&path.path(), site_config);
+        let config: HashMap<String, toml::Value> = toml::from_str(&config_content).unwrap();
+        let site_config = config.get("site").unwrap();
+
+        let posts = load_posts(&path.path(), site_config);
 
         println!("Site loaded!");
 
         sites.insert(
             path.file_name().to_str().unwrap().to_string(),
-            SiteState {
-                site: site_config.clone(),
+            Site {
+                config: site_config.clone(),
                 path: path.path().display().to_string(),
-                site_data,
-                resources: Arc::new(RwLock::new(resources)),
+                data: site_data,
+                posts: Arc::new(RwLock::new(posts)),
                 tera: Arc::new(RwLock::new(tera)),
             },
         );
@@ -791,55 +898,11 @@ fn get_post_url(site: &toml::Value, slug: &str, date: Option<NaiveDateTime>) -> 
     }
 }
 
-fn get_post(path: &Path, site: &toml::Value) -> Option<Resource> {
-    let event = nostr::read_event(&path.display().to_string())?;
-
-    let html = md_to_html(&event.content);
-
-    let mut summary: Option<String> = None;
-    let dom = tl::parse(&html, tl::ParserOptions::default()).unwrap();
-    let parser = dom.parser();
-    if let Some(p) = dom.query_selector("p").unwrap().next() {
-        summary = Some(p.get(parser).unwrap().inner_text(parser).to_string());
-    }
-
-    let slug = event.get_long_form_slug()?;
-    let date = event.get_long_form_published_at();
-
-    let is_draft = event.kind == nostr::EVENT_KIND_LONG_FORM_DRAFT;
-
-    if !is_draft {
-        Some(Resource {
-            resource_type: ResourceType::Post,
-            path: path.display().to_string(),
-            url: get_post_url(site, &slug, date),
-            mime: format!("{}", mime::HTML),
-            event_id: Some(event.id.to_owned()),
-            summary,
-            tags: event.get_tags_hash(),
-            inner_html: Some(html.to_owned()),
-            slug: Some(slug),
-            date,
-        })
-    } else {
-        None
-    }
-}
-
-fn skipped(entry: &DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .map(|s| (s.starts_with('.') || s.starts_with('_')) && s != ".well-known")
-        .unwrap_or(false)
-}
-
-fn load_posts(site_path: &PathBuf, site: &toml::Value) -> HashMap<String, Resource> {
+fn load_posts(site_path: &PathBuf, site: &toml::Value) -> HashMap<String, Post> {
     let mut posts = HashMap::new();
 
     let mut posts_path = PathBuf::from(site_path);
     posts_path.push("_events/");
-
     if !posts_path.is_dir() {
         return posts;
     }
@@ -849,112 +912,29 @@ fn load_posts(site_path: &PathBuf, site: &toml::Value) -> HashMap<String, Resour
         if !path.is_file() {
             continue;
         }
-        let maybe_post = get_post(&path, site);
-        if maybe_post.is_none() {
-            continue;
-        }
-        let post = maybe_post.unwrap();
-        let resource_path = post.url.to_owned();
 
-        println!("Loaded post {} from {}", resource_path, post.path);
-        posts.insert(resource_path.to_string(), post);
+        if let Some(event) = nostr::read_event(&path.display().to_string()) {
+            if let Some(slug) = event.get_long_form_slug() {
+                let date = event.get_long_form_published_at();
+                if event.kind != nostr::EVENT_KIND_LONG_FORM_DRAFT {
+                    let post = Post {
+                        event_id: event.id.to_owned(),
+                        path: path.display().to_string(),
+                        url: get_post_url(site, &slug, date),
+                        summary: event.get_long_form_summary(),
+                        inner_html: md_to_html(&event.content),
+                        date,
+                        slug,
+                        tags: event.get_tags_hash(),
+                    };
+                    println!("Loaded post {} from {}", &post.url, post.path);
+                    posts.insert(post.url.to_string(), post);
+                }
+            }
+        }
     }
 
     posts
-}
-
-fn render_page(
-    resource: &Resource,
-    posts: &Vec<&Resource>,
-    site_data: &HashMap<String, serde_yaml::Value>,
-    text: &str,
-    site: &toml::Value,
-    tera: &mut tera::Tera,
-) -> Vec<u8> {
-    let mut extra_context = tera::Context::new();
-    extra_context.insert("page", resource);
-    extra_context.insert("posts", &posts);
-    extra_context.insert("data", &site_data);
-
-    let rendered_text = render(text, site, Some(extra_context.clone()), tera);
-    let html = md_to_html(&rendered_text);
-    let layout = if resource.date.is_some() {
-        "post.html".to_string()
-    } else {
-        "page.html".to_string()
-    };
-
-    render_template(&layout, tera, &html, site, extra_context)
-        .as_bytes()
-        .to_vec()
-}
-
-fn load_extra_resources(site_path: &PathBuf) -> HashMap<String, Resource> {
-    let mut resources = HashMap::new();
-
-    let walker = WalkDir::new(site_path).into_iter();
-    for entry in walker.filter_entry(|e| !skipped(e)) {
-        let path = entry.unwrap().into_path();
-
-        if !path.is_file() {
-            continue;
-        }
-
-        let site_prefix = site_path.display().to_string();
-        let path_str = path.display().to_string();
-        let extension = path.extension().unwrap().to_str().unwrap();
-
-        let resource_path = path_str.strip_prefix(site_prefix.as_str()).unwrap();
-        let content = fs::read(&path).unwrap();
-
-        let mime = match mime::Mime::sniff(&content) {
-            Ok(m) => m,
-            _ => match mime::Mime::from_extension(extension) {
-                Some(m) => m,
-                _ => mime::PLAIN,
-            },
-        };
-
-        println!(
-            "Loaded resource {} from {} ({}).",
-            resource_path, path_str, mime,
-        );
-
-        let resource = Resource {
-            resource_type: ResourceType::Extra,
-            path: path_str.to_owned(),
-            url: resource_path.to_owned(),
-            mime: format!("{}", mime),
-            event_id: None,
-            summary: None,
-            tags: HashMap::new(),
-            inner_html: None,
-            slug: None,
-            date: None,
-        };
-
-        resources.insert(resource_path.to_string(), resource);
-    }
-
-    resources
-}
-
-fn get_posts_list(resources: &HashMap<String, Resource>) -> Vec<&Resource> {
-    let mut posts_list: Vec<&Resource> = resources
-        .values()
-        .filter(|&r| r.resource_type == ResourceType::Post)
-        .collect();
-    posts_list.sort_by(|a, b| b.date.cmp(&a.date));
-
-    posts_list
-}
-
-fn load_resources(site_path: &PathBuf, site: &toml::Value) -> HashMap<String, Resource> {
-    let mut resources = HashMap::new();
-    resources.extend(load_posts(site_path, site));
-    resources.extend(load_extra_resources(site_path));
-
-    resources
 }
 
 fn parse_front_matter(content: &String) -> (String, HashMap<String, serde_yaml::Value>) {

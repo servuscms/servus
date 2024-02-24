@@ -133,14 +133,13 @@ Each of these "sites" has the following structure:
 │   ├── <EVENT_ID>.md
 │   └── ...
 ├── favicon.ico
-├── index.md
 ```
 
 Files and directories starting with "." are ignored.
 
 Files and directories starting with "_" have special meaning: `_config.toml`, `_data`, `_layouts`, `_events`.
 
-Anything else is considered a "resource" that will be served to the clients requesting it - regardless of the name.
+Anything else will be directly served to the clients requesting it.
 
 ## _config.toml
 
