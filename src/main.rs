@@ -431,6 +431,14 @@ fn render_robots_txt(site_url: &str) -> (mime::Mime, String) {
     (mime::PLAIN, content)
 }
 
+fn render_nostr_json(site: &Site) -> (mime::Mime, String) {
+    let content = format!(
+        "{{ \"names\": {{ \"_\": \"{}\" }} }}",
+        site.config.get("pubkey").unwrap().as_str().unwrap()
+    );
+    (mime::JSON, content)
+}
+
 fn render_sitemap_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
     let mut response: String = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n".to_owned();
     let posts = site.posts.read().unwrap();
@@ -448,7 +456,10 @@ fn render_sitemap_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
 }
 
 fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
-    let site_title = site.config.get("title").unwrap().as_str().unwrap();
+    let site_title = match site.config.get("title") {
+        Some(t) => t.as_str().unwrap(),
+        _ => "",
+    };
     let mut response: String = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n".to_owned();
     response.push_str("<feed xmlns=\"http://www.w3.org/2005/Atom\">\n");
     response.push_str(&format!("<title>{}</title>\n", site_title));
@@ -491,6 +502,7 @@ fn render_standard_resource(resource_name: &str, site: &Site) -> Option<(mime::M
     let site_url = site.config.get("url")?.as_str().unwrap();
     match resource_name {
         "robots.txt" => Some(render_robots_txt(site_url)),
+        ".well-known/nostr.json" => Some(render_nostr_json(site)),
         "sitemap.xml" => Some(render_sitemap_xml(site_url, site)),
         "atom.xml" => Some(render_atom_xml(site_url, site)),
         _ => None,
