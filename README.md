@@ -130,8 +130,8 @@ Each of these "sites" has the following structure:
 │   ├── page.html
 │   └── post.html
 ├── _events
-│   ├── <EVENT_ID>.md
-│   └── ...
+│   ├── pages
+│   └── posts
 ├── favicon.ico
 ```
 

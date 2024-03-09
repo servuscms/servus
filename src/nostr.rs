@@ -157,6 +157,8 @@ impl Event {
     }
 
     pub fn write(&self, fd: &mut fs::File) -> std::io::Result<()> {
+        // TODO: receive a path, so it can create all intermediate directories!
+
         writeln!(fd, "---")?;
         writeln!(fd, "id: {}", self.id)?;
         writeln!(fd, "pubkey: {}", self.pubkey)?;
