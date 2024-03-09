@@ -10,7 +10,7 @@ use std::{
 };
 use walkdir::WalkDir;
 
-use crate::nostr::{self, EVENT_KIND_LONG_FORM};
+use crate::nostr;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ServusMetadata {
@@ -18,9 +18,9 @@ struct ServusMetadata {
 }
 
 #[derive(Clone, Serialize)]
-struct Post {
-    slug: String,
+struct PageTemplateContext {
     url: String,
+    slug: Option<String>,
     summary: Option<String>,
     inner_html: String,
     date: Option<NaiveDateTime>,
@@ -40,7 +40,7 @@ pub struct Site {
 impl Site {
     pub fn load_resources(&self) {
         let mut root = PathBuf::from(&self.path);
-        root.push("_events/");
+        root.push("_content/");
         if !root.as_path().exists() {
             return;
         }
@@ -72,14 +72,14 @@ impl Site {
     }
 
     pub fn add_post(&self, event: &nostr::Event) {
-        let slug = event.get_long_form_slug().unwrap(); // all posts have a slug!
+        let slug = event.get_long_form_slug();
 
         let post = Resource {
             kind: get_resource_kind(event).unwrap(),
             event_kind: event.kind,
             event_id: event.id.to_owned(),
             date: event.get_long_form_published_at(),
-            slug: Some(slug.to_owned()),
+            slug: slug.to_owned(),
         };
 
         let mut file = fs::File::create(post.get_path(self).unwrap()).unwrap();
@@ -148,6 +148,7 @@ impl Site {
 pub enum ResourceKind {
     Post,
     Page,
+    Note,
 }
 
 #[derive(Clone, Serialize)]
@@ -161,16 +162,16 @@ pub struct Resource {
 
 impl Resource {
     fn get_relative_path(&self) -> Option<String> {
-        let slug = self.clone().slug.unwrap().to_owned();
         match self.kind {
-            ResourceKind::Page => Some(format!("pages/{}.md", slug)),
-            ResourceKind::Post => Some(format!("posts/{}.md", slug)),
+            ResourceKind::Post => Some(format!("posts/{}.md", self.clone().slug?.to_owned())),
+            ResourceKind::Page => Some(format!("pages/{}.md", self.clone().slug?.to_owned())),
+            ResourceKind::Note => Some(format!("notes/{}.md", self.event_id)),
         }
     }
 
     pub fn get_path(&self, site: &Site) -> Option<String> {
         let mut path = PathBuf::from(&site.path);
-        path.push("_events/");
+        path.push("_content/");
         path.push(&self.get_relative_path()?);
 
         Some(path.display().to_string())
@@ -190,6 +191,7 @@ impl Resource {
                 ));
             }
             ResourceKind::Page => Some(format!("/{}", &self.clone().slug.unwrap())),
+            ResourceKind::Note => Some(format!("/notes/{}", &self.clone().event_id)),
         }
     }
 
@@ -203,9 +205,9 @@ impl Resource {
                 let date = event.get_long_form_published_at();
                 let mut extra_context = tera::Context::new();
                 extra_context.insert(
-                    "page", // TODO: rename to "post"?
-                    &Post {
-                        slug: slug.to_owned(),
+                    "page",
+                    &PageTemplateContext {
+                        slug: Some(slug.to_owned()),
                         date,
                         tags: event.get_tags_hash(),
                         inner_html: md_to_html(&event.content),
@@ -230,6 +232,30 @@ impl Resource {
                 render_template(&layout, &mut tera, &html, &site.config, extra_context)
                     .as_bytes()
                     .to_vec()
+            }
+            ResourceKind::Note => {
+                let mut tera = site.tera.write().unwrap();
+                let mut extra_context = tera::Context::new();
+                extra_context.insert(
+                    "page",
+                    &PageTemplateContext {
+                        slug: None,
+                        date: Some(event.get_created_at_date().naive_utc()),
+                        tags: HashMap::new(),
+                        inner_html: event.content.to_owned(),
+                        summary: None,
+                        url: self.get_resource_url(&site.config).unwrap(),
+                    },
+                );
+                render_template(
+                    "note.html",
+                    &mut tera,
+                    &event.content,
+                    &site.config,
+                    extra_context,
+                )
+                .as_bytes()
+                .to_vec()
             }
         }
     }
@@ -451,13 +477,14 @@ pub fn load_sites() -> HashMap<String, Site> {
 fn get_resource_kind(event: &nostr::Event) -> Option<ResourceKind> {
     let date = event.get_long_form_published_at();
     match event.kind {
-        EVENT_KIND_LONG_FORM => {
+        nostr::EVENT_KIND_LONG_FORM => {
             if date.is_some() {
                 Some(ResourceKind::Post)
             } else {
                 Some(ResourceKind::Page)
             }
         }
+        nostr::EVENT_KIND_NOTE => Some(ResourceKind::Note),
         _ => None,
     }
 }

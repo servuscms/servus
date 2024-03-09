@@ -127,9 +127,11 @@ Each of these "sites" has the following structure:
 │   ├── includes
 │   │   └── [...]
 │   ├── base.html
+|   ├── note.html
 │   ├── page.html
 │   └── post.html
-├── _events
+├── _content
+|   ├── notes
 │   ├── pages
 │   └── posts
 ├── favicon.ico
@@ -137,7 +139,7 @@ Each of these "sites" has the following structure:
 
 Files and directories starting with "." are ignored.
 
-Files and directories starting with "_" have special meaning: `_config.toml`, `_data`, `_layouts`, `_events`.
+Files and directories starting with "_" have special meaning: `_config.toml`, `_data`, `_layouts`, `_content`.
 
 Anything else will be directly served to the clients requesting it.
 
@@ -163,8 +165,6 @@ The following variables are passed to the templates:
 * `site` - the `[site]` section in `_config.toml`
 * `page` - the current page being rendered
 * `data` - any data loaded from YAML files in `_data/`
-* `posts` - a list of all the posts (NB: this is available only for pages, not for the posts themselves)
-* `pages` - a list of all the pages (NB: this is available only for the "extra resources", ie. resources that are neither pages nor posts, like sitemap.xml, for example)
 
 ### Page variables
 
@@ -173,10 +173,10 @@ The following variables are passed to the templates:
 
 ## Posting
 
-Ways you can post to your blog:
+Ways you can post to your site:
 
-1. **Post using a 3rd party Nostr NIP-23 client** such as [Habla](https://github.com/verbiricha/habla.news)
-2. **Post using the built-in admin interface**, which is essentially a Nostr NIP-23 client
+1. **Post using a 3rd party Nostr client** such as [Habla](https://github.com/verbiricha/habla.news)
+2. **Post using the built-in admin interface**, which is essentially a Nostr client
 
 ## REST API
 
