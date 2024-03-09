@@ -1,6 +1,5 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use bytes::Bytes;
-use chrono::NaiveDateTime;
 use clap::Parser;
 use futures_util::stream::once;
 use http_types::{mime, Method};
@@ -11,7 +10,7 @@ use serde_json::json;
 use std::convert::Infallible;
 use std::{
     collections::HashMap,
-    env, fs,
+    fs,
     path::PathBuf,
     str,
     str::FromStr,
@@ -21,14 +20,14 @@ use tide::{http::StatusCode, log, Request, Response};
 use tide_acme::rustls_acme::caches::DirCache;
 use tide_acme::{AcmeConfig, TideRustlsExt};
 use tide_websockets::{Message, WebSocket, WebSocketConnection};
-use walkdir::WalkDir;
-use yaml_front_matter::YamlFrontMatter;
-
-mod nostr;
 
 mod admin {
     include!(concat!(env!("OUT_DIR"), "/admin.rs"));
 }
+mod nostr;
+mod site;
+
+use site::Site;
 
 static FILE_EXTENSIONS: phf::Map<&'static str, &'static str> = phf_map! {
     "image/png" => "png",
@@ -61,33 +60,6 @@ struct Cli {
     port: Option<u32>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct ServusMetadata {
-    version: String,
-}
-
-#[derive(Clone, Serialize)]
-struct Post {
-    event_id: String,
-    slug: String,
-    path: String,
-    url: String,
-    summary: Option<String>,
-    inner_html: String,
-    date: Option<NaiveDateTime>,
-    #[serde(flatten)]
-    tags: HashMap<String, String>,
-}
-
-#[derive(Clone)]
-struct Site {
-    path: String,
-    config: toml::Value,
-    data: HashMap<String, serde_yaml::Value>,
-    posts: Arc<RwLock<HashMap<String, Post>>>,
-    tera: Arc<RwLock<tera::Tera>>,
-}
-
 #[derive(Clone)]
 struct State {
     admin_domain: Option<String>,
@@ -97,88 +69,6 @@ struct State {
 #[derive(Deserialize, Serialize)]
 struct PostSiteRequestBody {
     domain: String,
-}
-
-fn add_post(site: &Site, event: &nostr::Event) {
-    match event.get_long_form_slug() {
-        None => (),
-        Some(slug) => {
-            let mut event_path = PathBuf::from(&site.path);
-            event_path.push("_events/");
-            fs::create_dir_all(&event_path).unwrap();
-            let mut path = PathBuf::from(&event_path);
-            path.push(format!("{}.md", event.id));
-
-            let date = event.get_long_form_published_at();
-            if event.kind != nostr::EVENT_KIND_LONG_FORM_DRAFT {
-                let post = Post {
-                    event_id: event.id.to_owned(),
-                    slug: slug.to_owned(),
-                    path: path.display().to_string(),
-                    url: get_post_url(&site.config, &slug, date),
-                    summary: event.get_long_form_summary(),
-                    inner_html: md_to_html(&event.content),
-                    date,
-                    tags: event.get_tags_hash(),
-                };
-
-                let mut posts = site.posts.write().unwrap();
-                if posts.contains_key(&post.url) {
-                    let mut old_path = event_path;
-                    old_path.push(format!("{}.md", posts.get(&post.url).unwrap().event_id));
-                    std::fs::remove_file(&old_path).unwrap();
-                }
-                posts.insert(post.url.to_owned(), post);
-            }
-
-            let mut file = fs::File::create(path).unwrap();
-            event.write(&mut file).unwrap();
-
-            log::info!("Added post: {}.", &slug);
-        }
-    }
-}
-
-fn remove_post(site: &Site, deletion_event: &nostr::Event) -> bool {
-    let mut deleted_event_id: Option<String> = None;
-    for tag in &deletion_event.tags {
-        if tag[0] == "e" {
-            // TODO: should we also support "a" tags?
-            deleted_event_id = Some(tag[1].to_owned());
-        }
-    }
-
-    if deleted_event_id.is_none() {
-        log::info!("No event reference found!");
-        return false;
-    }
-
-    let deleted_event_id = deleted_event_id.unwrap();
-
-    let mut event_path = PathBuf::from(&site.path);
-    event_path.push("_events/");
-    event_path.push(format!("{}.md", &deleted_event_id.clone()));
-    let mut post_url: Option<String> = None;
-    {
-        let site_posts = site.posts.read().unwrap();
-        for post in site_posts.values() {
-            if post.event_id == deleted_event_id {
-                post_url = Some(post.url.to_owned());
-            }
-        }
-    }
-
-    // NB: drafts have files but no associated Post
-    if let Some(post_url) = post_url {
-        site.posts.write().unwrap().remove(&post_url);
-    }
-
-    if std::fs::remove_file(&event_path).is_ok() {
-        log::info!("Removed event: {}!", &deleted_event_id);
-        true
-    } else {
-        false
-    }
 }
 
 fn build_raw_response(filename: &str, content: Vec<u8>) -> Response {
@@ -191,40 +81,14 @@ fn build_raw_response(filename: &str, content: Vec<u8>) -> Response {
         .build()
 }
 
-fn render_and_build_response(site: &Site, post_path: String) -> Response {
-    let posts = site.posts.read().unwrap();
-    let post = posts.get(&post_path).unwrap();
-
-    let file_content = fs::read_to_string(&post.path).unwrap();
-    let (text, _front_matter) = parse_front_matter(&file_content);
-
-    let rendered_content = {
-        let mut tera = site.tera.write().unwrap();
-        let mut posts_list: Vec<&Post> = posts.values().collect();
-        posts_list.sort_by(|a, b| b.date.cmp(&a.date));
-
-        let mut extra_context = tera::Context::new();
-        extra_context.insert("page", post);
-        extra_context.insert("posts", &posts_list);
-        extra_context.insert("data", &site.data);
-
-        let rendered_text = render(&text, &site.config, Some(extra_context.clone()), &mut tera);
-        let html = md_to_html(&rendered_text);
-        let layout = if post.date.is_some() {
-            "post.html".to_string()
-        } else {
-            "page.html".to_string()
-        };
-
-        render_template(&layout, &mut tera, &html, &site.config, extra_context)
-            .as_bytes()
-            .to_vec()
-    };
+fn render_and_build_response(site: &Site, resource_path: String) -> Response {
+    let resources = site.resources.read().unwrap();
+    let event_ref = resources.get(&resource_path).unwrap();
 
     Response::builder(StatusCode::Ok)
         .content_type(mime::HTML)
         .header("Access-Control-Allow-Origin", "*")
-        .body(&*rendered_content)
+        .body(&*event_ref.render(site))
         .build()
 }
 
@@ -267,7 +131,7 @@ async fn handle_websocket(
                         if !sites.contains_key(&host) {
                             return Ok(());
                         }
-                        add_post(sites.get(&host).unwrap(), &cmd.event);
+                        sites.get(&host).unwrap().add_post(&cmd.event);
                     }
                     ws.send_json(&json!(vec![
                         serde_json::Value::String("OK".to_string()),
@@ -285,7 +149,7 @@ async fn handle_websocket(
                         if !sites.contains_key(&host) {
                             return Ok(());
                         }
-                        post_removed = remove_post(sites.get(&host).unwrap(), &cmd.event);
+                        post_removed = sites.get(&host).unwrap().remove_post(&cmd.event);
                     }
 
                     ws.send_json(&json!(vec![
@@ -302,63 +166,30 @@ async fn handle_websocket(
                 }
             }
             nostr::Message::Req(cmd) => {
-                let mut query_posts = false;
-                let mut query_drafts = false;
-
+                let mut events: Vec<nostr::Event> = vec![];
                 for (filter_by, filter) in &cmd.filter.extra {
                     if filter_by != "kinds" {
                         log::info!("Ignoring unknown filter: {}.", filter_by);
                         continue;
                     }
-                    let filter_values = filter
+                    let filter_kinds: Vec<i64> = filter
                         .as_array()
                         .unwrap()
                         .iter()
                         .map(|f| f.as_i64().unwrap())
-                        .collect::<Vec<i64>>();
-                    if filter_values.contains(&nostr::EVENT_KIND_LONG_FORM) {
-                        query_posts = true;
-                    }
-                    if filter_values.contains(&nostr::EVENT_KIND_LONG_FORM_DRAFT) {
-                        query_drafts = true;
-                    }
-                }
+                        .collect();
 
-                let mut events: Vec<nostr::Event> = vec![];
-
-                if query_posts || query_drafts {
-                    // TODO: maybe the two queries should be unified?
                     let host = request.host().unwrap().to_string();
                     let sites = request.state().sites.read().unwrap();
                     if !sites.contains_key(&host) {
                         return Ok(());
                     };
                     let site = sites.get(&host).unwrap();
-                    if query_posts {
-                        let posts = site.posts.read().unwrap();
-                        let mut posts_list: Vec<&Post> = posts.values().collect();
-                        posts_list.sort_by(|a, b| b.date.cmp(&a.date));
-                        for post in posts_list {
-                            if let Some(event) = nostr::read_event(&post.path) {
-                                events.push(event);
-                            }
-                        }
-                    }
-                    if query_drafts {
-                        let mut drafts_path = PathBuf::from(&site.path);
-                        drafts_path.push("_events/");
-                        let drafts = match fs::read_dir(drafts_path) {
-                            Ok(paths) => paths
-                                .map(|r| r.unwrap().path().display().to_string())
-                                .collect(),
-                            _ => vec![],
-                        };
-                        for draft in &drafts {
-                            if let Some(event) = nostr::read_event(draft) {
-                                if event.kind == nostr::EVENT_KIND_LONG_FORM_DRAFT {
-                                    events.push(event);
-                                }
-                            }
+                    let resources = site.resources.read().unwrap();
+                    for resource in resources.values() {
+                        if filter_kinds.contains(&resource.event_kind) {
+                            let event = resource.read_event(site);
+                            events.push(event);
                         }
                     }
                 }
@@ -375,13 +206,11 @@ async fn handle_websocket(
                 ws.send_json(&json!(vec!["EOSE", &cmd.subscription_id.to_string()]))
                     .await
                     .unwrap();
-
                 log::info!(
                     "Sent {} events back for subscription {}.",
                     events.len(),
                     cmd.subscription_id
                 );
-
                 // TODO: At this point we should save the subscription and notify this client later if other posts appear.
                 // For that, we probably need to introduce a dispatcher thread.
                 // See: https://stackoverflow.com/questions/35673702/chat-using-rust-websocket/35785414#35785414
@@ -418,94 +247,11 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
     };
 
     {
-        let posts = site.posts.read().unwrap();
-        match posts.get("/index") {
+        let resources = site.resources.read().unwrap();
+        match resources.get("/index") {
             Some(..) => Ok(render_and_build_response(site, "/index".to_owned())),
             None => Ok(Response::new(StatusCode::NotFound)),
         }
-    }
-}
-
-fn render_robots_txt(site_url: &str) -> (mime::Mime, String) {
-    let content = format!("User-agent: *\nSitemap: {}/sitemap.xml", site_url);
-    (mime::PLAIN, content)
-}
-
-fn render_nostr_json(site: &Site) -> (mime::Mime, String) {
-    let content = format!(
-        "{{ \"names\": {{ \"_\": \"{}\" }} }}",
-        site.config.get("pubkey").unwrap().as_str().unwrap()
-    );
-    (mime::JSON, content)
-}
-
-fn render_sitemap_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
-    let mut response: String = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n".to_owned();
-    let posts = site.posts.read().unwrap();
-    response.push_str("<urlset xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd\" xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
-    for post in posts.values() {
-        let mut url = post.url.trim_end_matches("/index").to_owned();
-        if url == site_url && !url.ends_with('/') {
-            url.push('/');
-        }
-        response.push_str(&format!("    <url><loc>{}</loc></url>\n", url));
-    }
-    response.push_str("</urlset>");
-
-    (mime::XML, response)
-}
-
-fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
-    let site_title = match site.config.get("title") {
-        Some(t) => t.as_str().unwrap(),
-        _ => "",
-    };
-    let mut response: String = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n".to_owned();
-    response.push_str("<feed xmlns=\"http://www.w3.org/2005/Atom\">\n");
-    response.push_str(&format!("<title>{}</title>\n", site_title));
-    response.push_str(&format!(
-        "<link href=\"{}/atom.xml\" rel=\"self\"/>\n",
-        site_url
-    ));
-    response.push_str(&format!("<link href=\"{}/\"/>\n", site_url));
-    response.push_str(&format!("<id>{}</id>\n", site_url));
-    let posts = site.posts.read().unwrap();
-    for post in posts.values() {
-        if post.date.is_some() {
-            response.push_str(
-                &format!(
-                    "<entry>
-<title>{}</title>
-<link href=\"{}\"/>
-<updated>{}</updated>
-<id>{}/{}</id>
-<content type=\"xhtml\"><div xmlns=\"http://www.w3.org/1999/xhtml\">{}</div></content>
-</entry>
-",
-                    &post.tags.get("title").unwrap(),
-                    &post.url,
-                    &post.date.unwrap(),
-                    site_url,
-                    post.slug.clone(),
-                    &post.inner_html.to_owned()
-                )
-                .to_owned(),
-            );
-        }
-    }
-    response.push_str("</feed>");
-
-    (mime::XML, response)
-}
-
-fn render_standard_resource(resource_name: &str, site: &Site) -> Option<(mime::Mime, String)> {
-    let site_url = site.config.get("url")?.as_str().unwrap();
-    match resource_name {
-        "robots.txt" => Some(render_robots_txt(site_url)),
-        ".well-known/nostr.json" => Some(render_nostr_json(site)),
-        "sitemap.xml" => Some(render_sitemap_xml(site_url, site)),
-        "atom.xml" => Some(render_atom_xml(site_url, site)),
-        _ => None,
     }
 }
 
@@ -524,7 +270,7 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
 
     let site = sites.get(&host).unwrap();
 
-    if let Some((mime, response)) = render_standard_resource(path, site) {
+    if let Some((mime, response)) = site::render_standard_resource(path, site) {
         return Ok(Response::builder(StatusCode::Ok)
             .content_type(mime)
             .header("Access-Control-Allow-Origin", "*")
@@ -534,7 +280,7 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
 
     let existing_posts: Vec<String>;
     {
-        let posts = site.posts.read().unwrap();
+        let posts = site.resources.read().unwrap();
         existing_posts = posts.keys().cloned().collect();
     }
     let mut resource_path = format!("/{}", &path);
@@ -552,8 +298,12 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
                     return Ok(Response::builder(StatusCode::NotFound).build());
                 }
             }
-            let raw_content = fs::read(&resource_path).unwrap();
-            Ok(build_raw_response(&resource_path, raw_content))
+            if PathBuf::from(&resource_path).exists() {
+                let raw_content = fs::read(&resource_path).unwrap();
+                Ok(build_raw_response(&resource_path, raw_content))
+            } else {
+                Ok(Response::builder(StatusCode::NotFound).build())
+            }
         }
     }
 }
@@ -595,16 +345,19 @@ async fn handle_post_site(mut request: Request<State>) -> tide::Result<Response>
     if state.sites.read().unwrap().contains_key(&domain) {
         Ok(Response::builder(StatusCode::Conflict).build())
     } else {
-        let path = format!("./sites/{}", domain);
-        fs::create_dir_all(&path).unwrap();
-
-        let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
-        tera.autoescape_on(vec![]);
-
         let key = nostr_auth(&request);
         if key.is_none() {
             return Ok(Response::builder(StatusCode::BadRequest).build());
         }
+
+        let path = format!("./sites/{}", domain);
+        fs::create_dir_all(&path).unwrap();
+
+        // TODO: at this point we have no layouts!
+        // We should probably populate the _layouts dir with a "default theme" or something?
+
+        let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
+        tera.autoescape_on(vec![]);
 
         let config_content = format!(
             "[site]\npubkey = \"{}\"\nurl = \"https://{}\"",
@@ -621,7 +374,7 @@ async fn handle_post_site(mut request: Request<State>) -> tide::Result<Response>
                 config: site_config.get("site").unwrap().clone(),
                 path,
                 data: HashMap::new(),
-                posts: Arc::new(RwLock::new(HashMap::new())),
+                resources: Arc::new(RwLock::new(HashMap::new())),
                 tera: Arc::new(RwLock::new(tera)),
             },
         );
@@ -759,7 +512,7 @@ async fn main() -> Result<(), std::io::Error> {
 
     let mut app = tide::with_state(State {
         admin_domain: args.admin_domain.clone(),
-        sites: Arc::new(RwLock::new(load_sites())),
+        sites: Arc::new(RwLock::new(site::load_sites())),
     });
 
     app.with(log::LogMiddleware::new());
@@ -821,191 +574,4 @@ async fn main() -> Result<(), std::io::Error> {
     };
 
     Ok(())
-}
-
-fn load_sites() -> HashMap<String, Site> {
-    let paths = match fs::read_dir("./sites") {
-        Ok(paths) => paths.map(|r| r.unwrap()).collect(),
-        _ => vec![],
-    };
-
-    let mut sites = HashMap::new();
-    for path in &paths {
-        println!("Found site: {}", path.file_name().to_str().unwrap());
-        let config_content =
-            match fs::read_to_string(&format!("{}/_config.toml", path.path().display())) {
-                Ok(content) => content,
-                _ => {
-                    println!(
-                        "No site config for site: {}. Skipping!",
-                        path.file_name().to_str().unwrap()
-                    );
-                    continue;
-                }
-            };
-
-        println!("Loading layouts...");
-
-        let mut tera = tera::Tera::new(&format!(
-            "{}/_layouts/**/*",
-            fs::canonicalize(path.path()).unwrap().display()
-        ))
-        .unwrap();
-        tera.autoescape_on(vec![]);
-
-        println!("Loaded {} templates!", tera.get_template_names().count());
-
-        let mut site_data: HashMap<String, serde_yaml::Value> = HashMap::new();
-
-        let site_data_paths = match fs::read_dir(format!("{}/_data", path.path().display())) {
-            Ok(paths) => paths.map(|r| r.unwrap()).collect(),
-            _ => vec![],
-        };
-        for data_path in &site_data_paths {
-            let data_name = data_path
-                .path()
-                .file_stem()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string();
-            println!("Loading data: {}", &data_name);
-            let f = std::fs::File::open(data_path.path()).unwrap();
-            let data: serde_yaml::Value = serde_yaml::from_reader(f).unwrap();
-            site_data.insert(data_name, data);
-        }
-
-        let config: HashMap<String, toml::Value> = toml::from_str(&config_content).unwrap();
-        let site_config = config.get("site").unwrap();
-
-        let posts = load_posts(&path.path(), site_config);
-
-        println!("Site loaded!");
-
-        sites.insert(
-            path.file_name().to_str().unwrap().to_string(),
-            Site {
-                config: site_config.clone(),
-                path: path.path().display().to_string(),
-                data: site_data,
-                posts: Arc::new(RwLock::new(posts)),
-                tera: Arc::new(RwLock::new(tera)),
-            },
-        );
-    }
-
-    println!("{} sites loaded!", sites.len());
-
-    sites
-}
-
-fn get_post_url(site: &toml::Value, slug: &str, date: Option<NaiveDateTime>) -> String {
-    if date.is_some() {
-        site.get("post_permalink").map_or_else(
-            || format!("/posts/{}", &slug),
-            |p| p.as_str().unwrap().replace(":slug", slug),
-        )
-    } else {
-        format!("/{}", &slug)
-    }
-}
-
-fn load_posts(site_path: &PathBuf, site: &toml::Value) -> HashMap<String, Post> {
-    let mut posts = HashMap::new();
-
-    let mut posts_path = PathBuf::from(site_path);
-    posts_path.push("_events/");
-    if !posts_path.is_dir() {
-        return posts;
-    }
-
-    for entry in WalkDir::new(&posts_path) {
-        let path = entry.unwrap().into_path();
-        if !path.is_file() {
-            continue;
-        }
-
-        if let Some(event) = nostr::read_event(&path.display().to_string()) {
-            if let Some(slug) = event.get_long_form_slug() {
-                let date = event.get_long_form_published_at();
-                if event.kind != nostr::EVENT_KIND_LONG_FORM_DRAFT {
-                    let post = Post {
-                        event_id: event.id.to_owned(),
-                        path: path.display().to_string(),
-                        url: get_post_url(site, &slug, date),
-                        summary: event.get_long_form_summary(),
-                        inner_html: md_to_html(&event.content),
-                        date,
-                        slug,
-                        tags: event.get_tags_hash(),
-                    };
-                    println!("Loaded post {} from {}", &post.url, post.path);
-                    posts.insert(post.url.to_string(), post);
-                }
-            }
-        }
-    }
-
-    posts
-}
-
-fn parse_front_matter(content: &String) -> (String, HashMap<String, serde_yaml::Value>) {
-    match YamlFrontMatter::parse::<HashMap<String, serde_yaml::Value>>(content) {
-        Ok(document) => (document.content, document.metadata),
-        _ => (content.to_string(), HashMap::new()),
-    }
-}
-
-fn md_to_html(md_content: &str) -> String {
-    let options = &markdown::Options {
-        compile: markdown::CompileOptions {
-            allow_dangerous_html: true,
-            ..markdown::CompileOptions::default()
-        },
-        ..markdown::Options::default()
-    };
-
-    markdown::to_html_with_options(md_content, options).unwrap()
-}
-
-fn render(
-    content: &str,
-    site: &toml::Value,
-    extra_context: Option<tera::Context>,
-    tera: &mut tera::Tera,
-) -> String {
-    let mut context = tera::Context::new();
-    context.insert("site", &site);
-    context.insert(
-        "servus",
-        &ServusMetadata {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        },
-    );
-    if let Some(c) = extra_context {
-        context.extend(c);
-    }
-
-    tera.render_str(content, &context).unwrap()
-}
-
-fn render_template(
-    template: &str,
-    tera: &mut tera::Tera,
-    content: &str,
-    site: &toml::Value,
-    extra_context: tera::Context,
-) -> String {
-    let mut context = tera::Context::new();
-    context.insert("site", &site);
-    context.insert(
-        "servus",
-        &ServusMetadata {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        },
-    );
-    context.insert("content", &content);
-    context.extend(extra_context);
-
-    tera.render(template, &context).unwrap()
 }
