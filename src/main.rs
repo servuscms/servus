@@ -122,7 +122,8 @@ async fn handle_websocket(
                     continue;
                 }
 
-                if cmd.event.kind == nostr::EVENT_KIND_LONG_FORM
+                if cmd.event.kind == nostr::EVENT_KIND_NOTE
+                    || cmd.event.kind == nostr::EVENT_KIND_LONG_FORM
                     || cmd.event.kind == nostr::EVENT_KIND_LONG_FORM_DRAFT
                 {
                     {

@@ -1,5 +1,6 @@
 use bitcoin_hashes::{sha256, Hash};
-use chrono::NaiveDateTime;
+use chrono::TimeZone;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use lazy_static::lazy_static;
 use secp256k1::{schnorr, Secp256k1, VerifyOnly, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,7 @@ pub struct Event {
     pub sig: String,
 }
 
+pub const EVENT_KIND_NOTE: i64 = 1;
 pub const EVENT_KIND_DELETE: i64 = 5;
 pub const EVENT_KIND_AUTH: i64 = 27235;
 pub const EVENT_KIND_LONG_FORM: i64 = 30023;
@@ -38,6 +40,10 @@ lazy_static! {
 }
 
 impl Event {
+    pub fn get_created_at_date(&self) -> DateTime<Utc> {
+        Utc.timestamp_opt(self.created_at, 0).unwrap()
+    }
+
     pub fn get_tags_hash(&self) -> HashMap<String, String> {
         let mut tags: HashMap<String, String> = HashMap::new();
         for t in &self.tags {
@@ -184,12 +190,14 @@ impl Event {
 
 fn get_metadata_tags(document: &Document<HashMap<String, YamlValue>>) -> Option<Vec<Vec<String>>> {
     let mut tags: Vec<Vec<String>> = vec![];
-    for tag in document.metadata.get("tags")?.as_sequence()? {
-        let mut tag_vec: Vec<String> = vec![];
-        for t in tag.as_sequence().unwrap() {
-            tag_vec.push(t.as_str().unwrap().to_owned());
+    if let Some(seq) = document.metadata.get("tags")?.as_sequence() {
+        for tag in seq {
+            let mut tag_vec: Vec<String> = vec![];
+            for t in tag.as_sequence().unwrap() {
+                tag_vec.push(t.as_str().unwrap().to_owned());
+            }
+            tags.push(tag_vec);
         }
-        tags.push(tag_vec);
     }
 
     Some(tags)

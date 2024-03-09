@@ -7,6 +7,10 @@
             const API_BASE_URL = "%%API_BASE_URL%%";
             const WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
 
+            const EVENT_KIND_NOTE = 1;
+            const EVENT_KIND_LONG_FORM = 30023;
+            const EVENT_KIND_LONG_FORM_DRAFT = 30024;
+
             async function getEvent(kind, content, tags) {
                 let event = {'kind': kind, 'content': content, 'tags': tags};
                 event.pubkey = await window.nostr.getPublicKey();
@@ -54,7 +58,7 @@
                     ws.onmessage = (e) => {
                         let r = JSON.parse(e.data);
                         if (r[0] === 'EVENT') {
-                            let post = {'event_id': r[2].id, 'content': r[2].content, 'site': site, 'persisted': true, 'draft': r[2].kind === 30024};
+                            let post = {'event_id': r[2].id, 'content': r[2].content, 'site': site, 'persisted': true, 'kind': r[2].kind};
                             for (let i = 0; i < r[2].tags.length; i++) {
                                 let tag = r[2].tags[i];
                                 if (tag[0] === 'title') {
@@ -69,7 +73,7 @@
                         }
                     };
                     ws.onopen = (e) => {
-                        ws.send(JSON.stringify(['REQ', (Math.random() + 1).toString(36).substring(2), {'kinds': [30023, 30024]}]));
+                        ws.send(JSON.stringify(['REQ', (Math.random() + 1).toString(36).substring(2), {'kinds': [EVENT_KIND_LONG_FORM, EVENT_KIND_LONG_FORM_DRAFT]}]));
                     };
                 }
             }
@@ -84,7 +88,7 @@
                 return hex;
             }
 
-            function savePost(post, draft, published_at) {
+            function savePost(post, kind, published_at) {
                 let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
                 ws.onopen = async (e) => {
                     if (post.id === undefined) {
@@ -94,7 +98,7 @@
                     if (published_at !== undefined) {
                         tags.push(['published_at', published_at]);
                     }
-                    ws.send(JSON.stringify(['EVENT', await getEvent(draft ? 30024 : 30023, post.content, tags)]));
+                    ws.send(JSON.stringify(['EVENT', await getEvent(kind, post.content, tags)]));
                     post.persisted = true;
                 };
             }
@@ -105,6 +109,30 @@
                    ws.send(JSON.stringify(['EVENT', await getEvent(5, "", [['e', event_id]])]));
                    post.persisted = false;
                };
+            }
+
+            function getNotes(site, notes) {
+                notes.length = 0;
+
+                let ws = new WebSocket(`${WS_PROTOCOL}//${site.domain}`);
+                ws.onmessage = (e) => {
+                    let r = JSON.parse(e.data);
+                    if (r[0] === 'EVENT') {
+                        let note = {'event_id': r[2].id, 'content': r[2].content, 'site': site};
+                        notes.push(note);
+                    }
+                }
+
+                ws.onopen = (e) => {
+                    ws.send(JSON.stringify(['REQ', (Math.random() + 1).toString(36).substring(2), {'kinds': [EVENT_KIND_NOTE]}]));
+                };
+            }
+
+            function saveNote(note) {
+                let ws = new WebSocket(`${WS_PROTOCOL}//${note.site.domain}`);
+                ws.onopen = async (e) => {
+                    ws.send(JSON.stringify(['EVENT', await getEvent(EVENT_KIND_NOTE, note.content, [])]));
+                };
             }
 
             async function uploadFile(site) {
@@ -125,7 +153,7 @@
         </script>
     </head>
     <body>
-        <div class="w-full mx-auto" x-data="{site: null, post: null, fileManager: false, sites: [], posts: []}" x-init="await getSites(sites); await getPosts(sites, posts)">
+        <div class="w-full mx-auto" x-data="{site: null, post: null, note: null, noteManager: false, fileManager: false, sites: [], posts: [], notes: []}" x-init="await getSites(sites); await getPosts(sites, posts)">
             <div class="navbar bg-base-200">
                 <div class="navbar-start">
                     <a class="btn btn-ghost normal-case text-xl">Servus</a>
@@ -163,9 +191,9 @@
                             <div class="w-full flex justify-center items-center mt-2">
                                 <div class="w-full flex justify-center items-center gap-2">
                                     <div class="w-1/2 flex flex-row gap-2">
-                                        <button x-on:click="savePost(post, false, Math.floor(Date.now() / 1000).toString()); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
-                                        <button x-on:click="savePost(post, true, Math.floor(Date.now() / 1000).toString()); post = null; site = null;" class="btn btn-primary mt-1">Save draft</button>
-                                        <button x-on:click="savePost(post, false, undefined); post = null; site = null;" class="btn btn-primary mt-1">Save page</button>
+                                        <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM, Math.floor(Date.now() / 1000).toString()); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
+                                        <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM_DRAFT, Math.floor(Date.now() / 1000).toString()); post = null; site = null;" class="btn btn-primary mt-1">Save draft</button>
+                                        <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM, undefined); post = null; site = null;" class="btn btn-primary mt-1">Save page</button>
                                         <button x-on:click="if (!post.persisted) posts = posts.slice(0, -1); site = null; post = null" class="btn mt-1">Cancel</button>
                                     </div>
                                     <template x-if="post.id !== undefined && post.persisted">
@@ -177,7 +205,7 @@
                             </div>
                         </div>
                     </template>
-                    <template x-if="site && !post && !fileManager">
+                    <template x-if="site && !post && !noteManager && !fileManager">
                         <div class="w-3/4 mt-24">
                             <div class="form-control w-full max-w-full">
                                 <label class="label" for="domain">
@@ -193,7 +221,31 @@
                             </div>
                         </div>
                     </template>
-                    <template x-if="site && !post && fileManager">
+                    <template x-if="site && !post && noteManager && !fileManager">
+                        <div>
+                            <ul class="list-disc">
+                                <template x-for="n in notes">
+                                    <li x-text="n.content"></li>
+                                </template>
+                            </ul>
+                            <div class="w-3/4 mt-24">
+                                <div class="form-control mt-2">
+                                    <label class="label" for="content">
+                                        <span class="label-text">Content</span>
+                                    </label>
+                                    <textarea x-model="note.content" rows="6" class="textarea textarea-bordered h-48"></textarea>
+                                </div>
+                                <div class="w-full flex justify-center items-center mt-2">
+                                    <div class="w-full flex justify-center items-center gap-2">
+                                        <div class="w-1/2 flex flex-row gap-2">
+                                            <button x-on:click="saveNote(note); getNotes(site, notes); note = {'site': site, 'content': ''};" class="btn btn-primary mt-1">Save</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                         </div>
+                    </template>
+                    <template x-if="site && !post && !noteManager && fileManager">
                         <div>
                             <input type="file" id="fileInput" />
                             <button x-on:click="await uploadFile(site);" class="btn btn-primary">Upload</button>
@@ -215,17 +267,18 @@
                                             <template x-if="p.site.domain === s.domain">
                                                 <li>
                                                     <span>
-                                                        <template x-if="p.draft">
+                                                        <template x-if="p.kind === EVENT_KIND_LONG_FORM_DRAFT">
                                                             <span class="badge badge-primary">draft</span>
                                                         </template>
-                                                        <a x-text="p.title" x-on:click="site = s; post = p; fileManager = false;"></a>
+                                                        <a x-text="p.title" x-on:click="site = s; post = p; noteManager = false; fileManager = false;"></a>
                                                     </span>
                                                 </li>
                                             </template>
                                         </template>
                                     </ul>
-                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = {'id': undefined, 'title': 'New post', 'content': 'New content', 'site': s, 'persisted': false}; posts = posts.concat(post); fileManager = false;">New post</a>
-                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = null; fileManager = true;">Files</a>
+                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = {'id': undefined, 'title': 'New post', 'content': 'New content', 'site': s, 'persisted': false}; posts = posts.concat(post); noteManager = false; fileManager = false;">New post</a>
+                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = null; noteManager = true; fileManager = false; getNotes(site, notes); note = {'content': '', 'site': s}">Notes</a>
+                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = null; noteManager = false; fileManager = true;">Files</a>
                                 </div>
                             </div>
                         </template>
