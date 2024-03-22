@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     env, fs,
+    fs::File,
+    io::{BufReader, Seek, SeekFrom},
     path::PathBuf,
     str,
     sync::{Arc, RwLock},
@@ -50,7 +52,15 @@ impl Site {
                 continue;
             }
             println!("Scanning file {}...", path.display());
-            if let Some(event) = nostr::read_event(&path.display().to_string()) {
+            let file = File::open(&path).unwrap();
+            let mut reader = BufReader::new(file);
+            loop {
+                let index = reader.stream_position().unwrap();
+                let event = nostr::read_event(&mut reader);
+                if event.is_none() {
+                    break;
+                }
+                let event = event.unwrap();
                 let slug = event.get_long_form_slug();
                 let date = event.get_long_form_published_at();
                 if let Some(kind) = get_resource_kind(&event) {
@@ -60,6 +70,7 @@ impl Site {
                         event_id: event.id.to_owned(),
                         date,
                         slug: slug.to_owned(),
+                        index,
                     };
                     if let Some(url) = resource.get_resource_url(&self.config) {
                         println!("Resource url={} -> {}.", &url, &resource.event_id);
@@ -71,24 +82,39 @@ impl Site {
         }
     }
 
-    pub fn add_post(&self, event: &nostr::Event) {
+    pub fn get_resource_path(&self, kind: &ResourceKind, slug: &Option<String>) -> Option<String> {
+        let mut path = PathBuf::from(&self.path);
+        path.push("_content/");
+        path.push(match kind {
+            ResourceKind::Post => format!("posts/{}.md", slug.clone().unwrap()),
+            ResourceKind::Page => format!("pages/{}.md", slug.clone().unwrap()),
+            ResourceKind::Note => "notes.mmd".to_string(),
+        });
+
+        Some(path.display().to_string())
+    }
+
+    pub fn add_content(&self, event: &nostr::Event) {
+        let kind = get_resource_kind(event).unwrap();
         let slug = event.get_long_form_slug();
 
-        let post = Resource {
-            kind: get_resource_kind(event).unwrap(),
+        let index = event
+            .write(&self.get_resource_path(&kind, &slug).unwrap())
+            .unwrap();
+
+        let resource = Resource {
+            kind,
             event_kind: event.kind,
             event_id: event.id.to_owned(),
             date: event.get_long_form_published_at(),
-            slug: slug.to_owned(),
+            slug,
+            index,
         };
 
-        let mut file = fs::File::create(post.get_path(self).unwrap()).unwrap();
-        event.write(&mut file).unwrap();
-
-        if let Some(url) = post.get_resource_url(&self.config) {
+        if let Some(url) = resource.get_resource_url(&self.config) {
             // but not all posts have an URL (drafts don't)
             let mut resources = self.resources.write().unwrap();
-            resources.insert(url.to_owned(), post);
+            resources.insert(url.to_owned(), resource);
         }
     }
 
@@ -127,7 +153,7 @@ impl Site {
                 if resource.event_kind == deleted_event_kind && resource.slug == deleted_event_slug
                 {
                     resource_url = Some(url.to_owned());
-                    path = resource.get_path(self);
+                    path = self.get_resource_path(&resource.kind, &resource.slug);
                 }
             }
         }
@@ -154,31 +180,22 @@ pub enum ResourceKind {
 #[derive(Clone, Serialize)]
 pub struct Resource {
     pub kind: ResourceKind,
-    pub event_kind: i64,
+    pub event_kind: i64, // TODO: get rid of this?
     pub event_id: String,
     pub date: Option<NaiveDateTime>,
     pub slug: Option<String>,
+    pub index: u64,
 }
 
 impl Resource {
-    fn get_relative_path(&self) -> Option<String> {
-        match self.kind {
-            ResourceKind::Post => Some(format!("posts/{}.md", self.clone().slug?.to_owned())),
-            ResourceKind::Page => Some(format!("pages/{}.md", self.clone().slug?.to_owned())),
-            ResourceKind::Note => Some(format!("notes/{}.md", self.event_id)),
-        }
-    }
-
-    pub fn get_path(&self, site: &Site) -> Option<String> {
-        let mut path = PathBuf::from(&site.path);
-        path.push("_content/");
-        path.push(&self.get_relative_path()?);
-
-        Some(path.display().to_string())
-    }
-
     pub fn read_event(&self, site: &Site) -> nostr::Event {
-        nostr::read_event(&self.get_path(site).unwrap()).unwrap()
+        let path = site.get_resource_path(&self.kind, &self.slug).unwrap();
+        let file = File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        if self.index != 0 {
+            reader.seek(SeekFrom::Start(self.index)).unwrap();
+        }
+        nostr::read_event(&mut reader).unwrap()
     }
 
     pub fn get_resource_url(&self, site_config: &toml::Value) -> Option<String> {
@@ -446,7 +463,7 @@ pub fn load_sites() -> HashMap<String, Site> {
                 .unwrap()
                 .to_string();
             println!("Loading data: {}", &data_name);
-            let f = fs::File::open(data_path.path()).unwrap();
+            let f = File::open(data_path.path()).unwrap();
             let data: serde_yaml::Value = serde_yaml::from_reader(f).unwrap();
             site_data.insert(data_name, data);
         }
