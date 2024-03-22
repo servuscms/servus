@@ -1,20 +1,21 @@
 use bitcoin_hashes::{sha256, Hash};
-use chrono::TimeZone;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use lazy_static::lazy_static;
 use secp256k1::{schnorr, Secp256k1, VerifyOnly, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
-use std::collections::HashMap;
-use std::fs;
-use std::io::Write;
-use std::str;
-use std::str::FromStr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    ffi::OsStr,
+    fs,
+    fs::{File, OpenOptions},
+    io::{BufRead, Write},
+    path::Path,
+    str::FromStr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tide::log;
-use yaml_front_matter::{Document, YamlFrontMatter};
 
 pub struct InvalidEventError;
 
@@ -162,35 +163,51 @@ impl Event {
         serde_json::to_string(&c).unwrap()
     }
 
-    pub fn write(&self, fd: &mut fs::File) -> std::io::Result<()> {
-        // TODO: receive a path, so it can create all intermediate directories!
+    pub fn write(&self, filename: &str) -> std::io::Result<u64> {
+        let path = Path::new(&filename);
+        fs::create_dir_all(path.ancestors().nth(1).unwrap()).unwrap();
+        let extension = path.extension().and_then(OsStr::to_str).unwrap();
+        let mut file;
+        let index;
+        if extension == "mmd" {
+            index = path.metadata()?.len();
+            file = OpenOptions::new().append(true).open(path).unwrap();
+            if index != 0 {
+                writeln!(file, "")?;
+                writeln!(file, "")?;
+                writeln!(file, "")?;
+            }
+        } else {
+            index = 0_u64;
+            file = File::create(path).unwrap();
+        }
 
-        writeln!(fd, "---")?;
-        writeln!(fd, "id: {}", self.id)?;
-        writeln!(fd, "pubkey: {}", self.pubkey)?;
-        writeln!(fd, "created_at: {}", self.created_at)?;
-        writeln!(fd, "kind: {}", self.kind)?;
-        writeln!(fd, "tags:")?;
+        writeln!(file, "---")?;
+        writeln!(file, "id: {}", self.id)?;
+        writeln!(file, "pubkey: {}", self.pubkey)?;
+        writeln!(file, "created_at: {}", self.created_at)?;
+        writeln!(file, "kind: {}", self.kind)?;
+        writeln!(file, "tags:")?;
         for tag in self.tags.clone() {
             for (i, t) in tag.iter().enumerate() {
                 if i == 0 {
-                    writeln!(fd, "- - {}", t)?;
+                    writeln!(file, "- - {}", t)?;
                 } else {
-                    writeln!(fd, "  - \"{}\"", t)?;
+                    writeln!(file, "  - \"{}\"", t)?;
                 }
             }
         }
-        writeln!(fd, "sig: {}", self.sig)?;
-        writeln!(fd, "---")?;
-        write!(fd, "{}", self.content)?;
+        writeln!(file, "sig: {}", self.sig)?;
+        writeln!(file, "---")?;
+        write!(file, "{}", self.content)?;
 
-        Ok(())
+        Ok(index)
     }
 }
 
-fn get_metadata_tags(document: &Document<HashMap<String, YamlValue>>) -> Option<Vec<Vec<String>>> {
+fn get_metadata_tags(metadata: &HashMap<String, YamlValue>) -> Option<Vec<Vec<String>>> {
     let mut tags: Vec<Vec<String>> = vec![];
-    if let Some(seq) = document.metadata.get("tags")?.as_sequence() {
+    if let Some(seq) = metadata.get("tags")?.as_sequence() {
         for tag in seq {
             let mut tag_vec: Vec<String> = vec![];
             for t in tag.as_sequence().unwrap() {
@@ -203,22 +220,58 @@ fn get_metadata_tags(document: &Document<HashMap<String, YamlValue>>) -> Option<
     Some(tags)
 }
 
-pub fn read_event(path: &str) -> Option<Event> {
-    if let Ok(content) = fs::read_to_string(path) {
-        if let Ok(document) = YamlFrontMatter::parse::<HashMap<String, YamlValue>>(&content) {
-            return Some(Event {
-                id: document.metadata.get("id")?.as_str()?.to_owned(),
-                pubkey: document.metadata.get("pubkey")?.as_str()?.to_owned(),
-                created_at: document.metadata.get("created_at")?.as_i64()?,
-                kind: document.metadata.get("kind")?.as_i64()?,
-                tags: get_metadata_tags(&document)?,
-                content: document.content.to_owned(),
-                sig: document.metadata.get("sig")?.as_str()?.to_owned(),
-            });
+pub fn read_event(reader: &mut dyn BufRead) -> Option<Event> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes = reader.read_line(&mut line).unwrap();
+        if bytes == 0 {
+            return None;
+        }
+        if !line.trim_end_matches('\n').is_empty() {
+            break;
         }
     }
+    if line.trim_end_matches('\n') != "---" {
+        return None;
+    }
+    let mut yaml_front_matter = String::new();
+    loop {
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        if line.trim_end_matches('\n') == "---" {
+            break;
+        }
+        yaml_front_matter.push_str(&line);
+    }
 
-    None
+    let front_matter: HashMap<String, YamlValue> =
+        serde_yaml::from_str(&yaml_front_matter).unwrap();
+
+    let mut content = String::new();
+    let mut found_newline = false;
+    loop {
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let is_empty_line = line.trim_end_matches('\n').is_empty();
+        if found_newline && is_empty_line {
+            break;
+        }
+        if is_empty_line {
+            found_newline = true;
+        }
+        content.push_str(&line);
+    }
+
+    Some(Event {
+        id: front_matter.get("id")?.as_str()?.to_owned(),
+        pubkey: front_matter.get("pubkey")?.as_str()?.to_owned(),
+        created_at: front_matter.get("created_at")?.as_i64()?,
+        kind: front_matter.get("kind")?.as_i64()?,
+        tags: get_metadata_tags(&front_matter)?,
+        sig: front_matter.get("sig")?.as_str()?.to_owned(),
+        content: content.trim_end_matches('\n').to_owned(),
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -252,4 +305,71 @@ pub enum Message {
     Event(EventCmd),
     Req(ReqCmd),
     Close(CloseCmd),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::BufReader;
+
+    #[test]
+    fn test_read_event() {
+        let note = r#"---
+id: 0ff0c8f57ddea79cb9f12c574b5056b712d584b9fe55118149ea4b343d3f89a7
+pubkey: f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6
+created_at: 1710006173
+kind: 1
+tags:
+sig: 39944d4aa9bdba0b6739d6ee126ae84cdbacb90e9b4412ff44bf91c1948525c07ef022c5941921c25154d08b2a43bd3c8f4e5181b905eaaef18957d89d01f598
+---
+qwerty"#;
+
+        let event = read_event(&mut BufReader::new(note.as_bytes())).unwrap();
+
+        let expected_id = "0ff0c8f57ddea79cb9f12c574b5056b712d584b9fe55118149ea4b343d3f89a7";
+        let expected_pubkey = "f982dbf2a0a4a484c98c5cbb8b83a1ecaf6589cb2652e19381158b5646fe23d6";
+        let expected_sig = "39944d4aa9bdba0b6739d6ee126ae84cdbacb90e9b4412ff44bf91c1948525c07ef022c5941921c25154d08b2a43bd3c8f4e5181b905eaaef18957d89d01f598";
+        let expected_content = "qwerty";
+        assert_eq!(event.id, expected_id);
+        assert_eq!(event.pubkey, expected_pubkey);
+        assert_eq!(event.kind, 1);
+        assert_eq!(event.sig, expected_sig);
+        assert_eq!(event.content, expected_content);
+
+        let notes = r#"
+---
+id: id1
+pubkey: pk1
+created_at: 1710000000
+kind: 1
+tags:
+sig: sig1
+---
+Note content 1
+
+
+---
+id: id2
+pubkey: pk2
+created_at: 1710000000
+kind: 1
+tags:
+sig: sig2
+---
+Note content 2
+"#;
+        let mut reader = BufReader::new(notes.as_bytes());
+        let event1 = read_event(&mut reader).unwrap();
+        assert_eq!(event1.id, "id1");
+        assert_eq!(event1.pubkey, "pk1");
+        assert_eq!(event1.kind, 1);
+        assert_eq!(event1.sig, "sig1");
+        assert_eq!(event1.content, "Note content 1");
+        let event2 = read_event(&mut reader).unwrap();
+        assert_eq!(event2.id, "id2");
+        assert_eq!(event2.pubkey, "pk2");
+        assert_eq!(event2.kind, 1);
+        assert_eq!(event2.sig, "sig2");
+        assert_eq!(event2.content, "Note content 2");
+    }
 }

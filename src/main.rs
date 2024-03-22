@@ -132,7 +132,7 @@ async fn handle_websocket(
                         if !sites.contains_key(&host) {
                             return Ok(());
                         }
-                        sites.get(&host).unwrap().add_post(&cmd.event);
+                        sites.get(&host).unwrap().add_content(&cmd.event);
                     }
                     ws.send_json(&json!(vec![
                         serde_json::Value::String("OK".to_string()),
@@ -188,6 +188,7 @@ async fn handle_websocket(
                     let site = sites.get(&host).unwrap();
                     let resources = site.resources.read().unwrap();
                     for resource in resources.values() {
+                        // TODO: make this not depend on resource.event_kind!
                         if filter_kinds.contains(&resource.event_kind) {
                             let event = resource.read_event(site);
                             events.push(event);
