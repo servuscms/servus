@@ -1,4 +1,4 @@
-use chrono::NaiveDateTime;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use http_types::mime;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,7 +12,7 @@ use std::{
 };
 use walkdir::WalkDir;
 
-use crate::nostr;
+use crate::{content, nostr};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ServusMetadata {
@@ -20,14 +20,14 @@ struct ServusMetadata {
 }
 
 #[derive(Clone, Serialize)]
-struct PageTemplateContext {
+struct PageTemplateContext<TagType> {
     url: String,
-    slug: Option<String>,
+    slug: String,
     summary: Option<String>,
     inner_html: String,
     date: Option<NaiveDateTime>,
     #[serde(flatten)]
-    tags: HashMap<String, String>,
+    tags: HashMap<String, TagType>,
 }
 
 #[derive(Clone)]
@@ -51,44 +51,96 @@ impl Site {
             if !path.is_file() {
                 continue;
             }
+            let relative_path = path.strip_prefix(&root).unwrap();
             println!("Scanning file {}...", path.display());
             let file = File::open(&path).unwrap();
             let mut reader = BufReader::new(file);
             loop {
+                let filename = path.to_str().unwrap().to_string();
                 let index = reader.stream_position().unwrap();
-                let event = nostr::read_event(&mut reader);
-                if event.is_none() {
-                    break;
-                }
-                let event = event.unwrap();
-                let slug = event.get_long_form_slug();
-                let date = event.get_long_form_published_at();
-                if let Some(kind) = get_resource_kind(&event) {
-                    let resource = Resource {
-                        kind,
-                        event_kind: event.kind,
-                        event_id: event.id.to_owned(),
-                        date,
-                        slug: slug.to_owned(),
-                        index,
-                    };
-                    if let Some(url) = resource.get_resource_url(&self.config) {
-                        println!("Resource url={} -> {}.", &url, &resource.event_id);
-                        let mut resources = self.resources.write().unwrap();
-                        resources.insert(url, resource);
+                if let Some((front_matter, content)) = content::read(&mut reader) {
+                    let mut kind: Option<ResourceKind> = None;
+                    let mut date: Option<NaiveDateTime> = None;
+                    let mut slug: Option<String> = None;
+                    let mut event_ref: Option<EventRef> = None;
+                    if let Some(event) = nostr::parse_event(&front_matter, &content) {
+                        kind = get_resource_kind(&event);
+                        if kind.is_some() {
+                            event_ref = Some(EventRef {
+                                id: event.id.to_owned(),
+                                kind: event.kind,
+                            });
+                            date = Some(event.get_date());
+                            if let Some(long_form_slug) = event.get_long_form_slug() {
+                                slug = Some(long_form_slug);
+                            } else {
+                                slug = Some(event.id);
+                            }
+                        }
+                    } else {
+                        let file_stem = relative_path.file_stem().unwrap().to_str().unwrap();
+                        // TODO: extract path patterns from config
+                        if relative_path.starts_with("posts") {
+                            let date_part = &file_stem[0..10];
+                            if let Ok(d) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+                                if front_matter.contains_key("title") {
+                                    kind = Some(ResourceKind::Post);
+                                    let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+                                    date = Some(NaiveDateTime::new(d, midnight));
+                                    slug = Some(file_stem[11..].to_owned());
+                                } else {
+                                    println!("Post missing title: {}", file_stem);
+                                }
+                            } else {
+                                println!("Cannot parse post date from filename: {}", file_stem);
+                            };
+                        } else if relative_path.starts_with("pages") {
+                            if front_matter.contains_key("title") {
+                                kind = Some(ResourceKind::Page);
+                                slug = Some(file_stem.to_owned());
+                            } else {
+                                println!("Page missing title: {}", file_stem);
+                            }
+                        } else if relative_path.starts_with("notes") {
+                            kind = Some(ResourceKind::Note);
+                            date = front_matter.get("created_at").map(|c| {
+                                Utc.timestamp_opt(c.as_i64().unwrap(), 0)
+                                    .unwrap()
+                                    .naive_utc()
+                            });
+                            slug = Some(file_stem.to_owned());
+                        }
                     }
+                    if let (Some(kind), Some(slug)) = (kind, slug) {
+                        let resource = Resource {
+                            kind,
+                            date,
+                            slug,
+                            filename,
+                            index,
+                            event_ref,
+                        };
+                        if let Some(url) = resource.get_resource_url(&self.config) {
+                            println!("Resource: url={}.", &url);
+                            let mut resources = self.resources.write().unwrap();
+                            resources.insert(url, resource);
+                        }
+                    }
+                } else {
+                    break;
                 }
             }
         }
     }
 
-    pub fn get_resource_path(&self, kind: &ResourceKind, slug: &Option<String>) -> Option<String> {
+    fn get_resource_path(&self, kind: &ResourceKind, slug: &str) -> Option<String> {
+        // TODO: read this from config
         let mut path = PathBuf::from(&self.path);
         path.push("_content/");
         path.push(match kind {
-            ResourceKind::Post => format!("posts/{}.md", slug.clone().unwrap()),
-            ResourceKind::Page => format!("pages/{}.md", slug.clone().unwrap()),
-            ResourceKind::Note => "notes.mmd".to_string(),
+            ResourceKind::Post => format!("posts/{}.md", slug),
+            ResourceKind::Page => format!("pages/{}.md", slug),
+            ResourceKind::Note => format!("notes/{}.md", slug),
         });
 
         Some(path.display().to_string())
@@ -96,19 +148,25 @@ impl Site {
 
     pub fn add_content(&self, event: &nostr::Event) {
         let kind = get_resource_kind(event).unwrap();
-        let slug = event.get_long_form_slug();
+        let slug = if event.is_long_form() {
+            event.get_long_form_slug().unwrap()
+        } else {
+            event.id.to_owned()
+        };
 
-        let index = event
-            .write(&self.get_resource_path(&kind, &slug).unwrap())
-            .unwrap();
+        let filename = self.get_resource_path(&kind, &slug).unwrap();
+        let index = event.write(&filename).unwrap();
 
         let resource = Resource {
             kind,
-            event_kind: event.kind,
-            event_id: event.id.to_owned(),
             date: event.get_long_form_published_at(),
             slug,
+            filename,
             index,
+            event_ref: Some(EventRef {
+                id: event.id.to_owned(),
+                kind: event.kind,
+            }),
         };
 
         if let Some(url) = resource.get_resource_url(&self.config) {
@@ -143,17 +201,18 @@ impl Site {
         }
 
         let deleted_event_kind = parts[0].parse::<i64>().unwrap();
-        let deleted_event_slug = Some(parts[2].to_owned());
+        let deleted_event_slug = parts[2].to_owned();
 
         let mut resource_url: Option<String> = None;
         let mut path: Option<String> = None;
         {
             let resources = self.resources.read().unwrap();
             for (url, resource) in &*resources {
-                if resource.event_kind == deleted_event_kind && resource.slug == deleted_event_slug
-                {
-                    resource_url = Some(url.to_owned());
-                    path = self.get_resource_path(&resource.kind, &resource.slug);
+                if let Some(event_ref) = resource.event_ref.clone() {
+                    if event_ref.kind == deleted_event_kind && resource.slug == deleted_event_slug {
+                        resource_url = Some(url.to_owned());
+                        path = self.get_resource_path(&resource.kind, &resource.slug);
+                    }
                 }
             }
         }
@@ -178,64 +237,89 @@ pub enum ResourceKind {
 }
 
 #[derive(Clone, Serialize)]
+pub struct EventRef {
+    pub id: String,
+    pub kind: i64,
+}
+
+#[derive(Clone, Serialize)]
 pub struct Resource {
     pub kind: ResourceKind,
-    pub event_kind: i64, // TODO: get rid of this?
-    pub event_id: String,
+    pub slug: String,
+
     pub date: Option<NaiveDateTime>,
-    pub slug: Option<String>,
+
+    pub filename: String,
     pub index: u64,
+
+    pub event_ref: Option<EventRef>,
 }
 
 impl Resource {
-    pub fn read_event(&self, site: &Site) -> nostr::Event {
-        let path = site.get_resource_path(&self.kind, &self.slug).unwrap();
-        let file = File::open(path).unwrap();
+    pub fn read(&self) -> Option<(HashMap<String, serde_yaml::Value>, String)> {
+        let file = File::open(&self.filename).unwrap();
         let mut reader = BufReader::new(file);
         if self.index != 0 {
             reader.seek(SeekFrom::Start(self.index)).unwrap();
         }
-        nostr::read_event(&mut reader).unwrap()
+
+        content::read(&mut reader)
     }
 
     pub fn get_resource_url(&self, site_config: &toml::Value) -> Option<String> {
+        // TODO: extract all URL patterns from config!
         match self.kind {
             ResourceKind::Post => {
-                let slug = self.clone().slug.unwrap();
                 return Some(site_config.get("post_permalink").map_or_else(
-                    || format!("/posts/{}", &slug),
-                    |p| p.as_str().unwrap().replace(":slug", &slug),
+                    || format!("/posts/{}", &self.slug),
+                    |p| p.as_str().unwrap().replace(":slug", &self.slug),
                 ));
             }
-            ResourceKind::Page => Some(format!("/{}", &self.clone().slug.unwrap())),
-            ResourceKind::Note => Some(format!("/notes/{}", &self.clone().event_id)),
+            ResourceKind::Page => Some(format!("/{}", &self.clone().slug)),
+            ResourceKind::Note => Some(format!("/notes/{}", &self.clone().slug)),
         }
     }
 
     pub fn render(&self, site: &Site) -> Vec<u8> {
-        let event = self.read_event(site);
+        let (front_matter, content) = self.read().unwrap();
 
         match self.kind {
             ResourceKind::Page | ResourceKind::Post => {
                 let mut tera = site.tera.write().unwrap();
-                let slug = event.get_long_form_slug().unwrap();
-                let date = event.get_long_form_published_at();
                 let mut extra_context = tera::Context::new();
-                extra_context.insert(
-                    "page",
-                    &PageTemplateContext {
-                        slug: Some(slug.to_owned()),
-                        date,
-                        tags: event.get_tags_hash(),
-                        inner_html: md_to_html(&event.content),
-                        summary: event.get_long_form_summary(),
-                        url: self.get_resource_url(&site.config).unwrap(),
-                    },
-                );
+
+                // TODO: how to refactor this?
+                // Basically the if/else branches are the same,
+                // but constructing PageTemplateContext with different type parameters.
+                if let Some(event) = nostr::parse_event(&front_matter, &content) {
+                    extra_context.insert(
+                        "page", // TODO: rename to "resource"?
+                        &PageTemplateContext {
+                            slug: self.slug.to_owned(),
+                            date: self.date,
+                            tags: event.get_tags_hash(),
+                            inner_html: md_to_html(&content),
+                            summary: event.get_long_form_summary(),
+                            url: self.get_resource_url(&site.config).unwrap(),
+                        },
+                    );
+                } else {
+                    extra_context.insert(
+                        "page", // TODO: rename to "resource"?
+                        &PageTemplateContext {
+                            slug: self.slug.to_owned(),
+                            date: self.date,
+                            tags: front_matter,
+                            inner_html: md_to_html(&content),
+                            summary: None,
+                            url: self.get_resource_url(&site.config).unwrap(),
+                        },
+                    );
+                }
                 extra_context.insert("data", &site.data);
 
                 let rendered_text = render(
-                    &event.content,
+                    &content,
                     &site.config,
                     Some(extra_context.clone()),
                     &mut tera,
@@ -253,13 +337,14 @@ impl Resource {
             ResourceKind::Note => {
                 let mut tera = site.tera.write().unwrap();
                 let mut extra_context = tera::Context::new();
+                let date = self.date;
                 extra_context.insert(
-                    "page",
+                    "page", // TODO: rename to "resource"?
                     &PageTemplateContext {
-                        slug: None,
-                        date: Some(event.get_created_at_date().naive_utc()),
-                        tags: HashMap::new(),
-                        inner_html: event.content.to_owned(),
+                        slug: self.slug.to_owned(),
+                        date,
+                        tags: front_matter,
+                        inner_html: content.to_owned(),
                         summary: None,
                         url: self.get_resource_url(&site.config).unwrap(),
                     },
@@ -267,7 +352,7 @@ impl Resource {
                 render_template(
                     "note.html",
                     &mut tera,
-                    &event.content,
+                    &content,
                     &site.config,
                     extra_context,
                 )
@@ -376,12 +461,27 @@ fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
     response.push_str(&format!("<link href=\"{}/\"/>\n", site_url));
     response.push_str(&format!("<id>{}</id>\n", site_url));
     let resources = site.resources.read().unwrap();
-    for (url, post_ref) in &*resources {
-        let event = post_ref.read_event(site);
-        if event.get_long_form_published_at().is_some() {
-            response.push_str(
-                &format!(
-                    "<entry>
+    for (url, resource) in &*resources {
+        if resource.date.is_some() {
+            if let Some((front_matter, content)) = resource.read() {
+                let mut title: Option<String> = None;
+                if resource.event_ref.is_some() {
+                    let event = nostr::parse_event(&front_matter, &content).unwrap();
+                    title = event.get_tags_hash().get("title").cloned();
+                }
+                if title.is_none() && front_matter.contains_key("title") {
+                    title = Some(
+                        front_matter
+                            .get("title")
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .to_string(),
+                    );
+                };
+                response.push_str(
+                    &format!(
+                        "<entry>
 <title>{}</title>
 <link href=\"{}\"/>
 <updated>{}</updated>
@@ -389,15 +489,16 @@ fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
 <content type=\"xhtml\"><div xmlns=\"http://www.w3.org/1999/xhtml\">{}</div></content>
 </entry>
 ",
-                    &event.get_tags_hash().get("title").unwrap(),
-                    &url,
-                    &event.get_long_form_published_at().unwrap(),
-                    site_url,
-                    event.get_long_form_slug().unwrap().clone(),
-                    &md_to_html(&event.content).to_owned()
-                )
-                .to_owned(),
-            );
+                        title.unwrap_or("".to_string()),
+                        &url,
+                        &resource.date.unwrap(),
+                        site_url,
+                        resource.slug.clone(),
+                        &md_to_html(&content).to_owned()
+                    )
+                    .to_owned(),
+                );
+            }
         }
     }
     response.push_str("</feed>");

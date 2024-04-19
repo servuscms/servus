@@ -131,7 +131,7 @@ Each of these "sites" has the following structure:
 │   ├── page.html
 │   └── post.html
 ├── _content
-|   ├── notes.mmd
+|   ├── notes
 │   ├── pages
 │   └── posts
 ├── favicon.ico

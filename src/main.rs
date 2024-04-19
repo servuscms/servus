@@ -24,6 +24,7 @@ use tide_websockets::{Message, WebSocket, WebSocketConnection};
 mod admin {
     include!(concat!(env!("OUT_DIR"), "/admin.rs"));
 }
+mod content;
 mod nostr;
 mod site;
 
@@ -188,10 +189,18 @@ async fn handle_websocket(
                     let site = sites.get(&host).unwrap();
                     let resources = site.resources.read().unwrap();
                     for resource in resources.values() {
-                        // TODO: make this not depend on resource.event_kind!
-                        if filter_kinds.contains(&resource.event_kind) {
-                            let event = resource.read_event(site);
-                            events.push(event);
+                        // NB: we are currently only returning resources with underlying events,
+                        // but we could actually return *all* resources by generating an event for them
+                        // and signing it with a key from config.
+                        if let Some(event_ref) = resource.event_ref.clone() {
+                            if filter_kinds.contains(&event_ref.kind) {
+                                if let Some((front_matter, content)) = resource.read() {
+                                    if let Some(event) = nostr::parse_event(&front_matter, &content)
+                                    {
+                                        events.push(event);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
