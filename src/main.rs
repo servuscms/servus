@@ -24,6 +24,9 @@ use tide_websockets::{Message, WebSocket, WebSocketConnection};
 mod admin {
     include!(concat!(env!("OUT_DIR"), "/admin.rs"));
 }
+mod default_theme {
+    include!(concat!(env!("OUT_DIR"), "/default_theme.rs"));
+}
 mod content;
 mod nostr;
 mod site;
@@ -364,31 +367,34 @@ async fn handle_post_site(mut request: Request<State>) -> tide::Result<Response>
         let path = format!("./sites/{}", domain);
         fs::create_dir_all(&path).unwrap();
 
-        // TODO: at this point we have no layouts!
-        // We should probably populate the _layouts dir with a "default theme" or something?
+        default_theme::generate(&format!("./sites/{}/", domain));
 
         let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
         tera.autoescape_on(vec![]);
 
         let config_content = format!(
-            "[site]\npubkey = \"{}\"\nurl = \"https://{}\"",
+            "[site]\npubkey = \"{}\"\nurl = \"https://{}\"\ntitle = \"{}\"\ntagline = \"{}\"",
             key.unwrap(),
-            domain
+            domain,
+            "Untitled site", // TODO: get from the request?
+            "Undefined tagline"
         );
         fs::write(format!("./sites/{}/_config.toml", domain), &config_content).unwrap();
 
         let site_config = toml::from_str::<HashMap<String, toml::Value>>(&config_content).unwrap();
+
+        let site = Site {
+            config: site_config.get("site").unwrap().clone(),
+            path,
+            data: HashMap::new(),
+            resources: Arc::new(RwLock::new(HashMap::new())),
+            tera: Arc::new(RwLock::new(tera)),
+        };
+        site.load_resources();
+
         let sites = &mut state.sites.write().unwrap();
-        sites.insert(
-            domain,
-            Site {
-                config: site_config.get("site").unwrap().clone(),
-                path,
-                data: HashMap::new(),
-                resources: Arc::new(RwLock::new(HashMap::new())),
-                tera: Arc::new(RwLock::new(tera)),
-            },
-        );
+        sites.insert(domain, site);
+
         Ok(Response::builder(StatusCode::Ok)
             .content_type(mime::JSON)
             .header("Access-Control-Allow-Origin", "*")

@@ -83,8 +83,6 @@ Things are definitely going to improve, but I am too busy building a solid found
 
 Not only there is no stable UI, but there are no usable themes included.
 
-A separate repository named `themes` exists, but it is very much WIP.
-
 ## Building
 
 * `cargo build` - this builds the "debug" version
@@ -161,15 +159,16 @@ Templating is handled by `Tera`, which looks familiar to anyone who has used Liq
 
 The following variables are passed to the templates:
 
+* `data` - any data loaded from YAML files in `_data/`
+* `posts` - a list of all the posts
+* `resource` - the current resource (post / page / note) being rendered
 * `servus.version` - the version of Servus currently running
 * `site` - the `[site]` section in `_config.toml`
-* `page` - the current page being rendered
-* `data` - any data loaded from YAML files in `_data/`
 
-### Page variables
+### Resource variables
 
-* `page.url` - the URL of this page
-* `page.date` - the date associated with this post
+* `resource.date` - the date associated with this resource (post / note)
+* `resource.url` - the URL of this resource
 
 ## Posting
 

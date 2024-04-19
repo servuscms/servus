@@ -60,6 +60,7 @@ impl Site {
                 let index = reader.stream_position().unwrap();
                 if let Some((front_matter, content)) = content::read(&mut reader) {
                     let mut kind: Option<ResourceKind> = None;
+                    let mut title: Option<String> = None;
                     let mut date: Option<NaiveDateTime> = None;
                     let mut slug: Option<String> = None;
                     let mut event_ref: Option<EventRef> = None;
@@ -70,6 +71,17 @@ impl Site {
                                 id: event.id.to_owned(),
                                 kind: event.kind,
                             });
+                            title = event.get_tags_hash().get("title").cloned();
+                            if title.is_none() && front_matter.contains_key("title") {
+                                title = Some(
+                                    front_matter
+                                        .get("title")
+                                        .unwrap()
+                                        .as_str()
+                                        .unwrap()
+                                        .to_string(),
+                                );
+                            };
                             date = Some(event.get_date());
                             if let Some(long_form_slug) = event.get_long_form_slug() {
                                 slug = Some(long_form_slug);
@@ -86,6 +98,14 @@ impl Site {
                                 if front_matter.contains_key("title") {
                                     kind = Some(ResourceKind::Post);
                                     let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+                                    title = Some(
+                                        front_matter
+                                            .get("title")
+                                            .unwrap()
+                                            .as_str()
+                                            .unwrap()
+                                            .to_string(),
+                                    );
                                     date = Some(NaiveDateTime::new(d, midnight));
                                     slug = Some(file_stem[11..].to_owned());
                                 } else {
@@ -98,6 +118,14 @@ impl Site {
                             if front_matter.contains_key("title") {
                                 kind = Some(ResourceKind::Page);
                                 slug = Some(file_stem.to_owned());
+                                title = Some(
+                                    front_matter
+                                        .get("title")
+                                        .unwrap()
+                                        .as_str()
+                                        .unwrap()
+                                        .to_string(),
+                                );
                             } else {
                                 println!("Page missing title: {}", file_stem);
                             }
@@ -114,6 +142,7 @@ impl Site {
                     if let (Some(kind), Some(slug)) = (kind, slug) {
                         let resource = Resource {
                             kind,
+                            title,
                             date,
                             slug,
                             filename,
@@ -159,6 +188,7 @@ impl Site {
 
         let resource = Resource {
             kind,
+            title: event.get_tags_hash().get("title").cloned(),
             date: event.get_long_form_published_at(),
             slug,
             filename,
@@ -229,7 +259,7 @@ impl Site {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 pub enum ResourceKind {
     Post,
     Page,
@@ -247,6 +277,7 @@ pub struct Resource {
     pub kind: ResourceKind,
     pub slug: String,
 
+    pub title: Option<String>,
     pub date: Option<NaiveDateTime>,
 
     pub filename: String,
@@ -293,7 +324,7 @@ impl Resource {
                 // but constructing PageTemplateContext with different type parameters.
                 if let Some(event) = nostr::parse_event(&front_matter, &content) {
                     extra_context.insert(
-                        "page", // TODO: rename to "resource"?
+                        "resource",
                         &PageTemplateContext {
                             slug: self.slug.to_owned(),
                             date: self.date,
@@ -305,7 +336,7 @@ impl Resource {
                     );
                 } else {
                     extra_context.insert(
-                        "page", // TODO: rename to "resource"?
+                        "resource",
                         &PageTemplateContext {
                             slug: self.slug.to_owned(),
                             date: self.date,
@@ -317,6 +348,16 @@ impl Resource {
                     );
                 }
                 extra_context.insert("data", &site.data);
+
+                let resources = site.resources.read().unwrap();
+                let mut posts_list = resources
+                    .values()
+                    .collect::<Vec<&Resource>>()
+                    .into_iter()
+                    .filter(|r| r.kind == ResourceKind::Post)
+                    .collect::<Vec<&Resource>>();
+                posts_list.sort_by(|a, b| b.date.cmp(&a.date));
+                extra_context.insert("posts", &posts_list);
 
                 let rendered_text = render(
                     &content,
@@ -339,7 +380,7 @@ impl Resource {
                 let mut extra_context = tera::Context::new();
                 let date = self.date;
                 extra_context.insert(
-                    "page", // TODO: rename to "resource"?
+                    "resource",
                     &PageTemplateContext {
                         slug: self.slug.to_owned(),
                         date,
@@ -367,11 +408,11 @@ fn render_template(
     template: &str,
     tera: &mut tera::Tera,
     content: &str,
-    site: &toml::Value,
+    site_config: &toml::Value,
     extra_context: tera::Context,
 ) -> String {
     let mut context = tera::Context::new();
-    context.insert("site", &site);
+    context.insert("site", &site_config);
     context.insert(
         "servus",
         &ServusMetadata {
@@ -463,22 +504,7 @@ fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
     let resources = site.resources.read().unwrap();
     for (url, resource) in &*resources {
         if resource.date.is_some() {
-            if let Some((front_matter, content)) = resource.read() {
-                let mut title: Option<String> = None;
-                if resource.event_ref.is_some() {
-                    let event = nostr::parse_event(&front_matter, &content).unwrap();
-                    title = event.get_tags_hash().get("title").cloned();
-                }
-                if title.is_none() && front_matter.contains_key("title") {
-                    title = Some(
-                        front_matter
-                            .get("title")
-                            .unwrap()
-                            .as_str()
-                            .unwrap()
-                            .to_string(),
-                    );
-                };
+            if let Some((_, content)) = resource.read() {
                 response.push_str(
                     &format!(
                         "<entry>
@@ -489,7 +515,7 @@ fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
 <content type=\"xhtml\"><div xmlns=\"http://www.w3.org/1999/xhtml\">{}</div></content>
 </entry>
 ",
-                        title.unwrap_or("".to_string()),
+                        resource.title.clone().unwrap_or("".to_string()),
                         &url,
                         &resource.date.unwrap(),
                         site_url,

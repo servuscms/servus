@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en-us">
+
+<head>
+  <link href="http://gmpg.org/xfn/11" rel="profile">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+  <!-- Enable responsiveness on mobile devices -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+
+  <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+  <meta name="generator" content="Servus v{{ servus.version }}" />
+  <meta property="og:site_name" content="{{ site.title }}" />
+
+  {% if resource and resource.title %}
+    <link rel="canonical" href="{{ resource.url }}" />
+    <meta property="og:url" content="{{ resource.url }}" />
+    <title>{{ resource.title }} | {{ site.title }}</title>
+    <meta property="og:title" content="{{ resource.title }}" />
+    <meta name="description" content="{{ resource.summary }}" />
+    <meta property="og:description" content="{{ resource.summary }}" />
+  {% else %}
+    <title>{{ site.title }} | {{ site.tagline }}</title>
+    <meta property="og:title" content="{{ site.title }}" />
+    <meta name="description" content="{{ site.tagline }}" />
+    <meta property="og:description" content="{{ site.tagline }}" />
+  {% endif %}
+
+  <link rel="stylesheet" href="/style.css" />
+
+  <link rel="alternate" type="application/atom+xml" title="{{ site.title }}" href="/atom.xml" />
+</head>
+
+<body>
+  <div>
+    <span class="navbar"><strong><a href="/">{{ site.title }}</a></strong> | <a href="/posts">posts</a></span>
+  </div>
+  <div class="content container">
+    {% block content %}
+    {% endblock content %}
+  </div>
+</body>
+
+</html>
