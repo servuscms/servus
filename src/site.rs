@@ -206,32 +206,19 @@ impl Site {
         }
     }
 
-    pub fn remove_post(&self, deletion_event: &nostr::Event) -> bool {
-        let mut deleted_event_ref: Option<String> = None;
+    pub fn remove_content(&self, deletion_event: &nostr::Event) -> bool {
+        let mut deleted_event_id: Option<String> = None;
         for tag in &deletion_event.tags {
-            if tag[0] == "a" {
-                // TODO: should we also support "e" tags?
-                deleted_event_ref = Some(tag[1].to_owned());
+            if tag[0] == "e" {
+                deleted_event_id = Some(tag[1].to_owned());
             }
         }
 
-        if deleted_event_ref.is_none() {
+        if deleted_event_id.is_none() {
             return false;
         }
 
-        let deleted_event_ref = deleted_event_ref.unwrap();
-
-        let parts = deleted_event_ref.split(':').collect::<Vec<_>>();
-        if parts.len() != 3 {
-            return false;
-        }
-
-        if parts[1] != deletion_event.pubkey {
-            return false;
-        }
-
-        let deleted_event_kind = parts[0].parse::<i64>().unwrap();
-        let deleted_event_slug = parts[2].to_owned();
+        let deleted_event_id = deleted_event_id.unwrap();
 
         let mut resource_url: Option<String> = None;
         let mut path: Option<String> = None;
@@ -239,7 +226,7 @@ impl Site {
             let resources = self.resources.read().unwrap();
             for (url, resource) in &*resources {
                 if let Some(event_ref) = resource.event_ref.clone() {
-                    if event_ref.kind == deleted_event_kind && resource.slug == deleted_event_slug {
+                    if event_ref.id == deleted_event_id {
                         resource_url = Some(url.to_owned());
                         path = self.get_resource_path(&resource.kind, &resource.slug);
                     }

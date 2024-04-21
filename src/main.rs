@@ -154,7 +154,7 @@ async fn handle_websocket(
                         if !sites.contains_key(&host) {
                             return Ok(());
                         }
-                        post_removed = sites.get(&host).unwrap().remove_post(&cmd.event);
+                        post_removed = sites.get(&host).unwrap().remove_content(&cmd.event);
                     }
 
                     ws.send_json(&json!(vec![

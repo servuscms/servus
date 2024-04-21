@@ -103,7 +103,7 @@
                 };
             }
 
-            function deletePost(post, event_id) {
+            function deleteResource(post, event_id) {
                let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
                ws.onopen = async (e) => {
                    ws.send(JSON.stringify(['EVENT', await getEvent(5, "", [['e', event_id]])]));
@@ -198,7 +198,7 @@
                                     </div>
                                     <template x-if="post.id !== undefined && post.persisted">
                                         <div class="w-1/2 flex flex-row-reverse">
-                                            <button x-on:click="if (confirm('Are you sure?')) { deletePost(post, post.event_id); post = null; site = null; await getPosts(sites, posts); }" class="btn btn-error mt-1">Delete</button>
+                                            <button x-on:click="if (confirm('Are you sure?')) { deleteResource(post, post.event_id); post = null; site = null; await getPosts(sites, posts); }" class="btn btn-error mt-1">Delete</button>
                                         </div>
                                     </template>
                                 </div>
@@ -225,7 +225,7 @@
                         <div>
                             <ul class="list-disc">
                                 <template x-for="n in notes">
-                                    <li x-text="n.content"></li>
+                                    <li><span x-text="n.content"></span> <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { deleteResource(n, n.event_id); getNotes(site, notes); }">Delete</button></li>
                                 </template>
                             </ul>
                             <div class="w-3/4 mt-24">
