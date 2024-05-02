@@ -34,7 +34,7 @@ struct PageTemplateContext<TagType> {
 pub struct Site {
     pub path: String,
     pub config: toml::Value,
-    pub data: HashMap<String, serde_yaml::Value>,
+    pub data: Arc<RwLock<HashMap<String, serde_yaml::Value>>>,
     pub resources: Arc<RwLock<HashMap<String, Resource>>>,
     pub tera: Arc<RwLock<tera::Tera>>,
 }
@@ -92,7 +92,12 @@ impl Site {
                     } else {
                         let file_stem = relative_path.file_stem().unwrap().to_str().unwrap();
                         // TODO: extract path patterns from config
-                        if relative_path.starts_with("posts") {
+                        if relative_path.starts_with("data") {
+                            println!("Data: id={}.", file_stem);
+                            let data: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+                            let mut site_data = self.data.write().unwrap();
+                            site_data.insert(file_stem.to_string(), data);
+                        } else if relative_path.starts_with("posts") {
                             let date_part = &file_stem[0..10];
                             if let Ok(d) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
                                 if front_matter.contains_key("title") {
@@ -562,33 +567,13 @@ pub fn load_sites() -> HashMap<String, Site> {
 
         println!("Loaded {} templates!", tera.get_template_names().count());
 
-        let mut site_data: HashMap<String, serde_yaml::Value> = HashMap::new();
-
-        let site_data_paths = match fs::read_dir(format!("{}/_data", path.path().display())) {
-            Ok(paths) => paths.map(|r| r.unwrap()).collect(),
-            _ => vec![],
-        };
-        for data_path in &site_data_paths {
-            let data_name = data_path
-                .path()
-                .file_stem()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string();
-            println!("Loading data: {}", &data_name);
-            let f = File::open(data_path.path()).unwrap();
-            let data: serde_yaml::Value = serde_yaml::from_reader(f).unwrap();
-            site_data.insert(data_name, data);
-        }
-
         let config: HashMap<String, toml::Value> = toml::from_str(&config_content).unwrap();
         let site_config = config.get("site").unwrap();
 
         let site = Site {
             config: site_config.clone(),
             path: path.path().display().to_string(),
-            data: site_data,
+            data: Arc::new(RwLock::new(HashMap::new())),
             resources: Arc::new(RwLock::new(HashMap::new())),
             tera: Arc::new(RwLock::new(tera)),
         };

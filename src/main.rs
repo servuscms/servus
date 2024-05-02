@@ -386,7 +386,7 @@ async fn handle_post_site(mut request: Request<State>) -> tide::Result<Response>
         let site = Site {
             config: site_config.get("site").unwrap().clone(),
             path,
-            data: HashMap::new(),
+            data: Arc::new(RwLock::new(HashMap::new())),
             resources: Arc::new(RwLock::new(HashMap::new())),
             tera: Arc::new(RwLock::new(tera)),
         };

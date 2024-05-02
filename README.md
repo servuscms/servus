@@ -119,25 +119,33 @@ Each of these "sites" has the following structure:
 
 ```
 ├── _config.toml
-├── _data
-│   └── some_data.yml
+├── _content
+│   ├── data
+│   │   ├── data1.yml
+│   │   └── [...]
+│   ├── notes
+│   │   ├── note1.md
+│   │   └── [...]
+│   ├── pages
+│   │   ├── page1.md
+│   │   └── [...]
+│   └── posts
+│       ├── yyyy-mm-dd-post1.md
+│       └── [...]
 ├── _layouts
 │   ├── includes
 │   │   └── [...]
 │   ├── base.html
-|   ├── note.html
+│   ├── note.html
 │   ├── page.html
 │   └── post.html
-├── _content
-|   ├── notes
-│   ├── pages
-│   └── posts
 ├── favicon.ico
+└── [...]
 ```
 
 Files and directories starting with "." are ignored.
 
-Files and directories starting with "_" have special meaning: `_config.toml`, `_data`, `_layouts`, `_content`.
+Files and directories starting with "_" have special meaning: `_config.toml`, `_content`, `_layouts`.
 
 Anything else will be directly served to the clients requesting it.
 
@@ -159,7 +167,7 @@ Templating is handled by `Tera`, which looks familiar to anyone who has used Liq
 
 The following variables are passed to the templates:
 
-* `data` - any data loaded from YAML files in `_data/`
+* `data` - any data loaded from YAML files in `_content/data/`
 * `posts` - a list of all the posts
 * `resource` - the current resource (post / page / note) being rendered
 * `servus.version` - the version of Servus currently running
