@@ -25,6 +25,11 @@
                 return `Nostr ${btoa(JSON.stringify(authEvent))}`;
             }
 
+            async function getBlossomAuthHeader(method) {
+                let authEvent = await getEvent(24242, "", [['t', method]]);
+                return `Nostr ${btoa(JSON.stringify(authEvent))}`;
+            }
+
             async function getSites(sites) {
                 let endpoint = `${API_BASE_URL}/api/sites`;
                 sites.length = 0;
@@ -128,6 +133,15 @@
                 };
             }
 
+            async function getFiles(site, files) {
+                files.length = 0;
+
+                const res = await fetch(new URL(`${window.location.protocol}//${site.domain}/list/${await window.nostr.getPublicKey()}`));
+                for (f of await res.json()) {
+                    files.push(f);
+                }
+            }
+
             function saveNote(note) {
                 let ws = new WebSocket(`${WS_PROTOCOL}//${note.site.domain}`);
                 ws.onopen = async (e) => {
@@ -135,25 +149,29 @@
                 };
             }
 
-            async function uploadFile(site) {
-                const endpoint = `${window.location.protocol}//${site.domain}/api/files`;
-                const request = new XMLHttpRequest();
-                const formData = new FormData();
-                request.open("POST", endpoint, true);
-                request.setRequestHeader('Authorization', await getNostrAuthHeader(endpoint, 'POST'));
-                request.onreadystatechange = () => {
-                    if (request.readyState === 4 && request.status === 201) {
-                        alert("Upload successful!");
-                    }
-                };
+            async function uploadFileBlossom(site) {
+                const endpoint = `${window.location.protocol}//${site.domain}/upload`;
                 let fileInput = document.querySelector('#fileInput');
-                formData.append('file', fileInput.files[0])
-                request.send(formData);
+                const res = await fetch(new URL(endpoint), {
+                    method: "PUT",
+                    body: fileInput.files[0],
+                    headers: { authorization: await getBlossomAuthHeader('upload') },
+                });
+                return (await res.json());
+            }
+
+            async function deleteFile(site, sha256) {
+                let endpoint = `${window.location.protocol}//${site.domain}/${sha256}`;
+                await fetch(new URL(endpoint),
+                    {
+                        method: 'DELETE',
+                        headers: { authorization: await getBlossomAuthHeader('delete') }
+                    });
             }
         </script>
     </head>
     <body>
-        <div class="w-full mx-auto" x-data="{site: null, post: null, note: null, noteManager: false, fileManager: false, sites: [], posts: [], notes: []}" x-init="await getSites(sites); await getPosts(sites, posts)">
+        <div class="w-full mx-auto" x-data="{site: null, post: null, note: null, noteManager: false, fileManager: false, sites: [], posts: [], notes: [], files: []}">
             <div class="navbar bg-base-200">
                 <div class="navbar-start">
                     <a class="btn btn-ghost normal-case text-xl">Servus</a>
@@ -247,14 +265,24 @@
                     </template>
                     <template x-if="site && !post && !noteManager && fileManager">
                         <div>
-                            <input type="file" id="fileInput" />
-                            <button x-on:click="await uploadFile(site);" class="btn btn-primary">Upload</button>
+                            <ul class="list-disc">
+                                <template x-for="f in files">
+                                    <li>
+                                        <span x-text="f.sha256"></span> (<span x-text="Math.floor(f.size / 1024)"></span> kb) <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { await deleteFile(site, f.sha256); getFiles(site, files); } ">Delete</button>
+                                    </li>
+                                </template>
+                            </ul>
+                            <div>
+                                <input type="file" id="fileInput" />
+                                <button x-on:click="await uploadFileBlossom(site); await getFiles(site, files);" class="btn btn-primary">Upload</button>
+                            </div>
                         </div>
                     </template>
                 </div>
                 <div class="drawer-side">
                     <label for="admin-drawer" class="drawer-overlay"></label>
                     <ul class="menu p-4 w-80 min-h-full bg-base-200 text-base-content">
+                        <li class="mb-2"><button x-on:click="await getSites(sites); await getPosts(sites, posts);" class="btn btn-primary">Refresh</button></li>
                         <template x-for="s in sites">
                             <div class="collapse collapse-arrow bg-base-200">
                                 <input type="radio" name="admin-accordion" /> 
@@ -278,7 +306,7 @@
                                     </ul>
                                     <a class="btn btn-outline btn-primary" x-on:click="site = s; post = {'id': undefined, 'title': 'New post', 'content': 'New content', 'site': s, 'persisted': false}; posts = posts.concat(post); noteManager = false; fileManager = false;">New post</a>
                                     <a class="btn btn-outline btn-primary" x-on:click="site = s; post = null; noteManager = true; fileManager = false; getNotes(site, notes); note = {'content': '', 'site': s}">Notes</a>
-                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = null; noteManager = false; fileManager = true;">Files</a>
+                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = null; noteManager = false; fileManager = true; await getFiles(site, files);">Files</a>
                                 </div>
                             </div>
                         </template>

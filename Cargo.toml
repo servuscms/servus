@@ -7,16 +7,13 @@ edition = "2021"
 async-std = { version = "1", features = ["attributes"] }
 base64 = { version = "0.21" }
 bitcoin_hashes = { version = "0.12", features = ["serde"] }
-bytes = "1.5"
 chrono = { version = "0", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 femme = "2"
-futures-util = "0.3"
 http-types = "2"
 lazy_static = "1.4"
 markdown = "1.0.0-alpha.3"
 mime_guess = "2.0.4"
-multer = "3.0.0"
 phf = { version = "0.11.2", features = ["macros"] }
 regex = "1"
 secp256k1 = { version = "0.27", features = ["serde", "bitcoin_hashes"] }

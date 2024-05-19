@@ -1,16 +1,14 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use bytes::Bytes;
 use clap::Parser;
-use futures_util::stream::once;
 use http_types::{mime, Method};
-use multer::Multipart;
-use phf::phf_map;
+use phf::phf_set;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::convert::Infallible;
 use std::{
     collections::HashMap,
     fs,
+    fs::File,
+    io::BufReader,
     path::PathBuf,
     str,
     str::FromStr,
@@ -32,13 +30,6 @@ mod nostr;
 mod site;
 
 use site::Site;
-
-static FILE_EXTENSIONS: phf::Map<&'static str, &'static str> = phf_map! {
-    "image/png" => "png",
-    "image/jpeg" => "jpg",
-    "image/gif" => "gif",
-    "audio/mpeg" => "mp3",
-};
 
 #[derive(Parser)]
 struct Cli {
@@ -75,9 +66,24 @@ struct PostSiteRequestBody {
     domain: String,
 }
 
-fn build_raw_response(filename: &str, content: Vec<u8>) -> Response {
-    let guess = mime_guess::from_path(filename);
-    let mime = mime::Mime::from_str(guess.first().unwrap().essence_str()).unwrap();
+static BLOSSOM_CONTENT_TYPES: phf::Set<&'static str> = phf_set! {
+    "audio/mpeg",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+};
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FileMetadata {
+    sha256: String,
+    #[serde(rename = "type")]
+    content_type: String,
+    size: usize,
+    url: String,
+}
+
+fn build_raw_response(content: Vec<u8>, mime: mime::Mime) -> Response {
     Response::builder(StatusCode::Ok)
         .content_type(mime)
         .header("Access-Control-Allow-Origin", "*")
@@ -269,10 +275,34 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
     }
 }
 
-async fn handle_get(request: Request<State>) -> tide::Result<Response> {
+async fn handle_request(request: Request<State>) -> tide::Result<Response> {
     let mut path = request.param("path").unwrap();
     if path.ends_with('/') {
         path = path.strip_suffix('/').unwrap();
+    }
+
+    let mut part: Option<String> = None;
+    if path.contains(".") {
+        let parts = path.split(".").collect::<Vec<_>>();
+        if parts.len() == 2 {
+            part = Some(parts[0].to_string());
+        }
+    } else {
+        part = Some(path.to_string());
+    }
+    let mut sha256: Option<String> = None;
+    if let Some(part) = part {
+        if part.len() == 64 && part.chars().all(|c| char::is_ascii_alphanumeric(&c)) {
+            sha256 = Some(part.to_string());
+        }
+    }
+
+    if sha256.is_some() && request.method() == Method::Options {
+        return Ok(Response::builder(StatusCode::Ok)
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Headers", "Authorization,*")
+            .header("Access-Control-Allow-Methods", "GET,PUT,DELETE")
+            .build());
     }
 
     let host = request.host().unwrap().to_string();
@@ -313,16 +343,39 @@ async fn handle_get(request: Request<State>) -> tide::Result<Response> {
                 }
             }
             if PathBuf::from(&resource_path).exists() {
+                // look for a static file
                 let raw_content = fs::read(&resource_path).unwrap();
-                Ok(build_raw_response(&resource_path, raw_content))
+                let guess = mime_guess::from_path(resource_path);
+                let mime = mime::Mime::from_str(guess.first().unwrap().essence_str()).unwrap();
+                Ok(build_raw_response(raw_content, mime))
             } else {
-                Ok(Response::builder(StatusCode::NotFound).build())
+                // look for an uploaded file
+                if let Some(sha256) = sha256 {
+                    resource_path = format!("{}/_content/files/{}", site.path, sha256);
+                    if PathBuf::from(&resource_path).exists() {
+                        let raw_content = fs::read(&resource_path).unwrap();
+                        let metadata_file = File::open(&format!(
+                            "{}/_content/files/{}.metadata.json",
+                            site.path, sha256
+                        ))
+                        .unwrap();
+                        let metadata_reader = BufReader::new(metadata_file);
+                        let metadata: FileMetadata =
+                            serde_json::from_reader(metadata_reader).unwrap();
+                        let mime = mime::Mime::from_str(&metadata.content_type).unwrap();
+                        Ok(build_raw_response(raw_content, mime))
+                    } else {
+                        Ok(Response::builder(StatusCode::NotFound).build())
+                    }
+                } else {
+                    Ok(Response::builder(StatusCode::NotFound).build())
+                }
             }
         }
     }
 }
 
-fn nostr_auth(request: &Request<State>) -> Option<String> {
+fn get_nostr_auth_event(request: &Request<State>) -> Option<nostr::Event> {
     let auth_header = request.header(tide::http::headers::AUTHORIZATION);
     let parts = auth_header?.as_str().split(' ').collect::<Vec<_>>();
     if parts.len() != 2 {
@@ -332,10 +385,18 @@ fn nostr_auth(request: &Request<State>) -> Option<String> {
         return None;
     }
 
-    let event: nostr::Event =
-        serde_json::from_str(str::from_utf8(&STANDARD.decode(parts[1]).unwrap()).unwrap()).unwrap();
+    Some(
+        serde_json::from_str(str::from_utf8(&STANDARD.decode(parts[1]).unwrap()).unwrap()).unwrap(),
+    )
+}
 
-    event.get_nip98_pubkey(request.url().as_str(), request.method().as_ref())
+fn nostr_auth(request: &Request<State>) -> Option<String> {
+    get_nostr_auth_event(request)?
+        .get_nip98_pubkey(request.url().as_str(), request.method().as_ref())
+}
+
+fn blossom_auth(request: &Request<State>, method: &str) -> Option<String> {
+    get_nostr_auth_event(request)?.get_blossom_pubkey(method)
 }
 
 async fn handle_post_site(mut request: Request<State>) -> tide::Result<Response> {
@@ -428,11 +489,65 @@ async fn handle_get_sites(request: Request<State>) -> tide::Result<Response> {
         .build())
 }
 
-async fn handle_post_file(mut request: Request<State>) -> tide::Result<Response> {
+async fn handle_list_request(request: Request<State>) -> tide::Result<Response> {
+    let site_path = {
+        let host = request.host().unwrap().to_string();
+        let sites = request.state().sites.read().unwrap();
+        if !sites.contains_key(&host) {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        };
+
+        let site = sites.get(&host).unwrap();
+
+        let pubkey = request.param("pubkey").unwrap();
+        if let Some(site_pubkey) = site.config.get("pubkey") {
+            if site_pubkey.as_str().unwrap() != pubkey {
+                log::info!("Invalid key.");
+                return Ok(Response::builder(StatusCode::NotFound)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .build());
+            }
+        } else {
+            log::info!("The site has no pubkey.");
+            return Ok(Response::builder(StatusCode::NotFound)
+                .header("Access-Control-Allow-Origin", "*")
+                .build());
+        }
+
+        site.path.clone()
+    };
+
+    let paths = match fs::read_dir(format!("{}/_content/files", site_path)) {
+        Ok(paths) => paths.map(|r| r.unwrap()).collect(),
+        _ => vec![],
+    };
+
+    let mut list = vec![];
+
+    for path in &paths {
+        if path.path().extension().is_none() {
+            let mut metadata_path = path.path();
+            metadata_path.set_extension("metadata.json");
+            let metadata_file = File::open(&metadata_path).unwrap();
+            let metadata_reader = BufReader::new(metadata_file);
+            let metadata: FileMetadata = serde_json::from_reader(metadata_reader).unwrap();
+            list.push(metadata);
+        }
+    }
+
+    return Ok(Response::builder(StatusCode::Created)
+        .content_type(mime::JSON)
+        .header("Access-Control-Allow-Origin", "*")
+        .body(serde_json::to_string(&list).unwrap())
+        .build());
+}
+
+async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Response> {
     if request.method() == Method::Options {
         return Ok(Response::builder(StatusCode::Ok)
             .header("Access-Control-Allow-Origin", "*")
-            .header("Access-Control-Allow-Headers", "Authorization")
+            .header("Access-Control-Allow-Headers", "Authorization,*")
+            .header("Access-Control-Allow-Methods", "GET,PUT,DELETE")
             .build());
     }
 
@@ -445,19 +560,22 @@ async fn handle_post_file(mut request: Request<State>) -> tide::Result<Response>
 
         let site = sites.get(&host).unwrap();
 
-        if let Some(pubkey) = nostr_auth(&request) {
+        if let Some(pubkey) = blossom_auth(&request, "upload") {
             if let Some(site_pubkey) = site.config.get("pubkey") {
                 if site_pubkey.as_str().unwrap() != pubkey {
+                    log::info!("Non-matching key.");
                     return Ok(Response::builder(StatusCode::Unauthorized)
                         .header("Access-Control-Allow-Origin", "*")
                         .build());
                 }
             } else {
+                log::info!("The site has no pubkey.");
                 return Ok(Response::builder(StatusCode::Unauthorized)
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
         } else {
+            log::info!("Missing Blossom auth.");
             return Ok(Response::builder(StatusCode::Unauthorized)
                 .header("Access-Control-Allow-Origin", "*")
                 .build());
@@ -466,59 +584,89 @@ async fn handle_post_file(mut request: Request<State>) -> tide::Result<Response>
         site.path.clone()
     };
 
-    let content_type = request
-        .header(tide::http::headers::CONTENT_TYPE)
-        .unwrap()
-        .as_str();
-    let boundary_index = content_type.find("boundary=").unwrap();
-    let boundary: String = content_type
-        .chars()
-        .skip(boundary_index)
-        .skip(String::from("boundary=").len())
-        .collect();
-
     let bytes = request.body_bytes().await?;
-    let stream = once(async move { Result::<Bytes, Infallible>::Ok(Bytes::from(bytes)) });
 
-    let mut multipart = Multipart::new(stream, boundary);
-    while let Some(field) = multipart.next_field().await.unwrap() {
-        if field.name().unwrap() == "file" {
-            let content = field.bytes().await.unwrap();
-            let hash = sha256::digest(&*content);
-            let mime = mime::Mime::sniff(&content);
-            if mime.is_err() || !FILE_EXTENSIONS.contains_key(mime.as_ref().unwrap().essence()) {
-                return Ok(Response::builder(StatusCode::BadRequest)
-                    .content_type(mime::JSON)
-                    .header("Access-Control-Allow-Origin", "*")
-                    .body(json!({"status": "error", "message": "Unknown content type."}))
-                    .build());
-            }
-            let extension = FILE_EXTENSIONS.get(mime.unwrap().essence()).unwrap();
-            fs::create_dir_all(format!("{}/files", site_path)).unwrap();
-            fs::write(
-                format!("{}/files/{}.{}", site_path, hash, extension),
-                content,
-            )
-            .unwrap();
-            let url = format!(
-                "https://{}/files/{}.{}",
-                request.host().unwrap(),
-                hash,
-                extension
-            );
-            return Ok(Response::builder(StatusCode::Created)
-               .content_type(mime::JSON)
-               .header("Access-Control-Allow-Origin", "*")
-               .body(json!({"status": "success", "nip94_event": {"tags": [["url", url], ["ox", hash]]}}).to_string())
-               .build());
-        }
+    let hash = sha256::digest(&*bytes);
+
+    let mime = mime::Mime::sniff(&bytes);
+    if mime.is_err() || !BLOSSOM_CONTENT_TYPES.contains(mime.as_ref().unwrap().essence()) {
+        return Ok(Response::builder(StatusCode::BadRequest)
+            .content_type(mime::JSON)
+            .header("Access-Control-Allow-Origin", "*")
+            .body(json!({"message": "Unknown content type."}))
+            .build());
     }
 
-    Ok(Response::builder(StatusCode::BadRequest)
+    let metadata = FileMetadata {
+        sha256: hash.to_owned(),
+        content_type: mime.unwrap().essence().to_owned(),
+        size: bytes.len(),
+        url: format!("https://{}/{}", request.host().unwrap(), hash),
+    };
+
+    fs::create_dir_all(format!("{}/_content/files", site_path)).unwrap();
+    fs::write(format!("{}/_content/files/{}", site_path, hash), bytes).unwrap();
+    fs::write(
+        format!("{}/_content/files/{}.metadata.json", site_path, hash),
+        serde_json::to_string(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    return Ok(Response::builder(StatusCode::Created)
         .content_type(mime::JSON)
         .header("Access-Control-Allow-Origin", "*")
-        .body(json!({"status": "error", "message": "File not found."}))
-        .build())
+        .body(serde_json::to_string(&metadata).unwrap())
+        .build());
+}
+
+async fn handle_delete_request(request: Request<State>) -> tide::Result<Response> {
+    let site_path = {
+        let host = request.host().unwrap().to_string();
+        let sites = request.state().sites.read().unwrap();
+        if !sites.contains_key(&host) {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        };
+
+        let site = sites.get(&host).unwrap();
+
+        if let Some(pubkey) = blossom_auth(&request, "delete") {
+            if let Some(site_pubkey) = site.config.get("pubkey") {
+                if site_pubkey.as_str().unwrap() != pubkey {
+                    log::info!("Non-matching key.");
+                    return Ok(Response::builder(StatusCode::Unauthorized)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .build());
+                }
+            } else {
+                log::info!("Site has no pubkey.");
+                return Ok(Response::builder(StatusCode::Unauthorized)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .build());
+            }
+        } else {
+            log::info!("Missing Blossom auth.");
+            return Ok(Response::builder(StatusCode::Unauthorized)
+                .header("Access-Control-Allow-Origin", "*")
+                .build());
+        }
+
+        site.path.clone()
+    };
+
+    let hash = request.param("sha256").unwrap();
+
+    fs::remove_file(format!("{}/_content/files/{}", site_path, hash)).unwrap();
+    fs::remove_file(format!(
+        "{}/_content/files/{}.metadata.json",
+        site_path, hash
+    ))
+    .unwrap();
+
+    return Ok(Response::builder(StatusCode::Created)
+        .content_type(mime::JSON)
+        .header("Access-Control-Allow-Origin", "*")
+        .body(json!({}))
+        .build());
 }
 
 #[async_std::main]
@@ -536,14 +684,16 @@ async fn main() -> Result<(), std::io::Error> {
     app.at("/")
         .with(WebSocket::new(handle_websocket))
         .get(handle_index);
-    app.at("*path").get(handle_get);
+    app.at("*path").options(handle_request).get(handle_request);
+    app.at("/upload")
+        .options(handle_upload_request)
+        .put(handle_upload_request);
+    app.at("/list/:pubkey").get(handle_list_request);
+    app.at("/:sha256").delete(handle_delete_request);
     if args.admin_domain.is_some() {
         app.at("/api/sites")
             .post(handle_post_site)
             .get(handle_get_sites);
-        app.at("/api/files")
-            .options(handle_post_file)
-            .post(handle_post_file);
     }
 
     let addr = "0.0.0.0";

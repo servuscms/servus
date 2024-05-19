@@ -32,6 +32,7 @@ pub struct Event {
 
 pub const EVENT_KIND_NOTE: i64 = 1;
 pub const EVENT_KIND_DELETE: i64 = 5;
+pub const EVENT_KIND_BLOSSOM: i64 = 24242;
 pub const EVENT_KIND_AUTH: i64 = 27235;
 pub const EVENT_KIND_LONG_FORM: i64 = 30023;
 pub const EVENT_KIND_LONG_FORM_DRAFT: i64 = 30024;
@@ -89,7 +90,7 @@ impl Event {
             .parse::<i64>()
             .unwrap();
 
-        NaiveDateTime::from_timestamp_opt(ts, 0)
+        DateTime::from_timestamp(ts, 0).map(|d| d.naive_utc())
     }
 
     pub fn validate_sig(&self) -> Result<(), InvalidEventError> {
@@ -146,6 +147,31 @@ impl Event {
             return None;
         }
         if tags.get("method")? != method {
+            return None;
+        }
+
+        Some(self.pubkey.to_owned())
+    }
+
+    pub fn get_blossom_pubkey(&self, method: &str) -> Option<String> {
+        if self.validate_sig().is_err() {
+            return None;
+        }
+
+        if self.kind != EVENT_KIND_BLOSSOM {
+            return None;
+        }
+
+        let now = SystemTime::now();
+        let one_min = Duration::from_secs(60);
+        let created_at = UNIX_EPOCH + Duration::from_secs(self.created_at as u64);
+        if created_at > now.checked_add(one_min).unwrap() {
+            return None;
+        }
+
+        let tags = self.get_tags_hash();
+        // TODO: check expiration
+        if tags.get("t")? != method {
             return None;
         }
 

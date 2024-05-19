@@ -52,6 +52,9 @@ impl Site {
                 continue;
             }
             let relative_path = path.strip_prefix(&root).unwrap();
+            if relative_path.starts_with("files/") {
+                continue;
+            }
             println!("Scanning file {}...", path.display());
             let file = File::open(&path).unwrap();
             let mut reader = BufReader::new(file);

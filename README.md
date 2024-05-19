@@ -4,7 +4,7 @@
 
 ## About
 
-**Servus** is a **CMS** and **personal Nostr relay** fully self-contained within one executable file.
+**Servus** is a **CMS**, **personal Nostr relay** and **personal Blossom server** fully self-contained within one executable file.
 
 ### What?! And why??
 
@@ -22,11 +22,15 @@ Unlike Jekyll, **Servus** does not have a build step, does not require nginx or 
 
 #### Personal Nostr Relay
 
-While I think the Nostr protocol is a step forward from RSS/Atom and ActivityPub and will eventually supersede both, writing apps that make use of the Nostr protocol is still widely misunderstood. People use Nostr clients to post to Nostr relays they have absolutely no control over. This model may work for Twitter clones or messaging apps where you don't need long term persistence of the content... But I want to be in control of my own data and know my data is there to stay.
+While I think the Nostr protocol is a step forward from RSS/Atom and ActivityPub and will eventually supersede both, writing apps that make use of the Nostr protocol is still widely misunderstood. People use Nostr clients to post to Nostr relays they have absolutely no control over. This model may work for certain use cases where you don't need long term persistence of the content... But I want to be in control of my own data and know my data is there to stay.
 
 **Servus** is the "canonical" source of my data, which it exposes as a Nostr relay.
 
-Always remember, the *T* in Nostr stands for "transmitted". Relays are used to *relay* information, not to *store* information!
+Always remember, the *T* in Nostr stands for "transmitted". Relays are used to *relay* your data, not to *store* it!
+
+#### Personal Blossom Server
+
+A CMS is incomplete if all it can deal with is text. It goes without saying that if you want to be in control of your data, that includes your images. Servus acts as your personal [Blossom](https://github.com/hzrd149/blossom) server.
 
 ## Goals and non-goals
 
@@ -198,6 +202,10 @@ A `POST` to `https://<ADMIN_DOMAIN>/api/sites` can be used to add a new site ass
 A `GET` to `https://<ADMIN_DOMAIN>/api/sites` can be used to get a list of all the sites belonging to a key.
 
 NB: Both requests require a [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) authorization header to be present, which will be validated and used to decide which Nostr pubkey the request is referring to!
+
+## Blossom API
+
+Servus also implements the [Blossom API](https://github.com/hzrd149/blossom) and therefore acts as your personal Blossom server.
 
 ## Admin interface
 
