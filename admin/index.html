@@ -56,10 +56,26 @@
                 });
             }
 
+            function getWebSocketUrl(siteDomain) {
+                if (API_BASE_URL.startsWith("//localhost:")) {
+                    return `ws:${API_BASE_URL}`;
+                } else {
+                    return `${WS_PROTOCOL}//${site.domain}`;
+                }
+            }
+
+            function getBlossomBaseUrl(siteDomain) {
+                if (API_BASE_URL.startsWith("//localhost:")) {
+                    return `http:${API_BASE_URL}`;
+                } else {
+                    return `${window.location.protocol}//${siteDomain}`;
+                }
+            }
+
             function getPosts(sites, posts) {
                 posts.length = 0;
                 for (let site of sites) {
-                    let ws = new WebSocket(`${WS_PROTOCOL}//${site.domain}`);
+                    let ws = new WebSocket(getWebSocketUrl(site.domain));
                     ws.onmessage = (e) => {
                         let r = JSON.parse(e.data);
                         if (r[0] === 'EVENT') {
@@ -94,7 +110,7 @@
             }
 
             function savePost(post, kind, published_at) {
-                let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
+                let ws = new WebSocket(getWebSocketUrl(post.site.domain));
                 ws.onopen = async (e) => {
                     if (post.id === undefined) {
                         post.id = post.title.toLowerCase().replace(/ /g, "-").replace(/[^\w-]+/g, "");
@@ -109,7 +125,7 @@
             }
 
             function deleteResource(post, event_id) {
-               let ws = new WebSocket(`${WS_PROTOCOL}//${post.site.domain}`);
+               let ws = new WebSocket(getWebSocketUrl(post.site.domain));
                ws.onopen = async (e) => {
                    ws.send(JSON.stringify(['EVENT', await getEvent(5, "", [['e', event_id]])]));
                    post.persisted = false;
@@ -119,7 +135,7 @@
             function getNotes(site, notes) {
                 notes.length = 0;
 
-                let ws = new WebSocket(`${WS_PROTOCOL}//${site.domain}`);
+                let ws = new WebSocket(getWebSocketUrl(site.domain));
                 ws.onmessage = (e) => {
                     let r = JSON.parse(e.data);
                     if (r[0] === 'EVENT') {
@@ -136,21 +152,21 @@
             async function getFiles(site, files) {
                 files.length = 0;
 
-                const res = await fetch(new URL(`${window.location.protocol}//${site.domain}/list/${await window.nostr.getPublicKey()}`));
+                const res = await fetch(new URL(`${getBlossomBaseUrl(site.domain)}/list/${await window.nostr.getPublicKey()}`));
                 for (f of await res.json()) {
                     files.push(f);
                 }
             }
 
             function saveNote(note) {
-                let ws = new WebSocket(`${WS_PROTOCOL}//${note.site.domain}`);
+                let ws = new WebSocket(getWebSocketUrl(note.site.domain));
                 ws.onopen = async (e) => {
                     ws.send(JSON.stringify(['EVENT', await getEvent(EVENT_KIND_NOTE, note.content, [])]));
                 };
             }
 
             async function uploadFileBlossom(site) {
-                const endpoint = `${window.location.protocol}//${site.domain}/upload`;
+                const endpoint = `${getBlossomBaseUrl(site.domain)}/upload`;
                 let fileInput = document.querySelector('#fileInput');
                 const res = await fetch(new URL(endpoint), {
                     method: "PUT",
@@ -161,7 +177,7 @@
             }
 
             async function deleteFile(site, sha256) {
-                let endpoint = `${window.location.protocol}//${site.domain}/${sha256}`;
+                let endpoint = `${getBlossomBaseUrl(site.domain)}/${sha256}`;
                 await fetch(new URL(endpoint),
                     {
                         method: 'DELETE',

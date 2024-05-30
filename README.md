@@ -193,13 +193,11 @@ Ways you can post to your site:
 
 A simple REST API exists that can be used to create new sites and list sites associated with a Nostr pubkey.
 
-In order to activate the API, you need to pass `--admin-domain <ADMIN_DOMAIN>`. Servus will listen to that domain for API requests.
-
 ### `/api/sites`
 
-A `POST` to `https://<ADMIN_DOMAIN>/api/sites` can be used to add a new site associated with a key.
+A `POST` to `/api/sites` can be used to add a new site associated with a key.
 
-A `GET` to `https://<ADMIN_DOMAIN>/api/sites` can be used to get a list of all the sites belonging to a key.
+A `GET` to `/api/sites` can be used to get a list of all the sites belonging to a key.
 
 NB: Both requests require a [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) authorization header to be present, which will be validated and used to decide which Nostr pubkey the request is referring to!
 
@@ -208,8 +206,6 @@ NB: Both requests require a [NIP-98](https://github.com/nostr-protocol/nips/blob
 Servus also implements the [Blossom API](https://github.com/hzrd149/blossom) and therefore acts as your personal Blossom server.
 
 ## Admin interface
-
-The same `--admin-domain <ADMIN_DOMAIN>` flag used to activate the REST API is also used to activate... you guessed it... the *admin interface*!
 
 The *admin interface* requires you to have a Nostr extension such as [Alby](https://getalby.com/) or [nos2x](https://github.com/fiatjaf/nos2x) installed in your browser and lets you create sites, create posts and edit posts. Still very experimental, even more so than **Servus** itself!
 

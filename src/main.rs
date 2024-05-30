@@ -29,9 +29,6 @@ use site::Site;
 
 #[derive(Parser)]
 struct Cli {
-    #[clap(short('a'), long)]
-    admin_domain: Option<String>,
-
     #[clap(short('e'), long)]
     contact_email: Option<String>,
 
@@ -53,7 +50,6 @@ struct Cli {
 
 #[derive(Clone)]
 struct State {
-    admin_domain: Option<String>,
     sites: Arc<RwLock<HashMap<String, Site>>>,
 }
 
@@ -234,20 +230,6 @@ async fn handle_websocket(
 }
 
 async fn handle_index(request: Request<State>) -> tide::Result<Response> {
-    let state = &request.state();
-
-    if state.admin_domain.is_some() {
-        let admin_domain = state.admin_domain.to_owned().unwrap();
-        if *request.host().unwrap() == admin_domain {
-            let admin_index =
-                admin::INDEX_HTML.replace("%%API_BASE_URL%%", &format!("//{}", admin_domain));
-            return Ok(Response::builder(StatusCode::Ok)
-                .content_type(mime::HTML)
-                .body(admin_index)
-                .build());
-        }
-    }
-
     if let Some(site) = get_site(&request) {
         let resources = site.resources.read().unwrap();
         match resources.get("/index") {
@@ -278,6 +260,17 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
     let mut path = request.param("path").unwrap();
     if path.ends_with('/') {
         path = path.strip_suffix('/').unwrap();
+    }
+
+    if path == ".admin" {
+        let admin_index = admin::INDEX_HTML.replace(
+            "%%API_BASE_URL%%",
+            &format!("//{}", request.host().unwrap()),
+        );
+        return Ok(Response::builder(StatusCode::Ok)
+            .content_type(mime::HTML)
+            .body(admin_index)
+            .build());
     }
 
     let mut part: Option<String> = None;
@@ -400,16 +393,6 @@ async fn handle_post_site(mut request: Request<State>) -> tide::Result<Response>
         .unwrap()
         .domain;
     let state = &request.state();
-
-    if state.admin_domain.is_none() {
-        return Ok(Response::builder(StatusCode::NotFound).build());
-    }
-
-    let admin_domain = state.admin_domain.to_owned().unwrap();
-
-    if *request.host().unwrap() != admin_domain {
-        return Ok(Response::builder(StatusCode::NotFound).build());
-    }
 
     if state.sites.read().unwrap().contains_key(&domain) {
         Ok(Response::builder(StatusCode::Conflict).build())
@@ -661,8 +644,9 @@ async fn main() -> Result<(), std::io::Error> {
         sites = existing_sites;
     }
 
+    let site_count = sites.len();
+
     let mut app = tide::with_state(State {
-        admin_domain: args.admin_domain.clone(),
         sites: Arc::new(RwLock::new(sites)),
     });
 
@@ -676,11 +660,9 @@ async fn main() -> Result<(), std::io::Error> {
         .put(handle_upload_request);
     app.at("/list/:pubkey").get(handle_list_request);
     app.at("/:sha256").delete(handle_delete_request);
-    if args.admin_domain.is_some() {
-        app.at("/api/sites")
-            .post(handle_post_site)
-            .get(handle_get_sites);
-    }
+    app.at("/api/sites")
+        .post(handle_post_site)
+        .get(handle_get_sites);
 
     let addr = "0.0.0.0";
 
@@ -696,7 +678,7 @@ async fn main() -> Result<(), std::io::Error> {
         if args.contact_email.is_none() {
             panic!("Use -e to provide a contact email!");
         }
-        let mut domains: Vec<String> = app
+        let domains: Vec<String> = app
             .state()
             .sites
             .read()
@@ -704,9 +686,6 @@ async fn main() -> Result<(), std::io::Error> {
             .keys()
             .map(|x| x.to_string())
             .collect();
-        if args.admin_domain.is_some() {
-            domains.push(args.admin_domain.unwrap());
-        }
         let cache = DirCache::new("./cache");
         let acme_config = AcmeConfig::new(domains)
             .cache(cache)
@@ -723,6 +702,12 @@ async fn main() -> Result<(), std::io::Error> {
     } else {
         let port = args.port.unwrap_or(4884);
         let bind_to = format!("{addr}:{port}");
+        println!("####################################");
+        if site_count == 1 {
+            println!("*** Your site: http://localhost:{port}/ ***");
+        }
+        println!("*** The admin interface: http://localhost:{port}/.admin/ ***");
+        println!("####################################");
         app.listen(bind_to).await?;
     };
 
