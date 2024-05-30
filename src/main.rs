@@ -6,12 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     collections::HashMap,
-    fs,
-    fs::File,
-    io::BufReader,
+    fs::{self, File},
+    io::{self, BufRead, BufReader, Write},
     path::PathBuf,
-    str,
-    str::FromStr,
+    str::{self, FromStr},
     sync::{Arc, RwLock},
 };
 use tide::{http::StatusCode, log, Request, Response};
@@ -22,9 +20,7 @@ use tide_websockets::{Message, WebSocket, WebSocketConnection};
 mod admin {
     include!(concat!(env!("OUT_DIR"), "/admin.rs"));
 }
-mod default_theme {
-    include!(concat!(env!("OUT_DIR"), "/default_theme.rs"));
-}
+
 mod content;
 mod nostr;
 mod site;
@@ -111,19 +107,21 @@ async fn handle_websocket(
         match parsed {
             nostr::Message::Event(cmd) => {
                 {
-                    let host = request.host().unwrap().to_string();
-                    let sites = request.state().sites.read().unwrap();
-                    if !sites.contains_key(&host) {
-                        return Ok(());
-                    }
-                    if let Some(site_pubkey) = sites.get(&host).unwrap().config.get("pubkey") {
-                        if cmd.event.pubkey != site_pubkey.as_str().unwrap() {
-                            log::info!("Ignoring event for unknown pubkey: {}.", cmd.event.pubkey);
+                    if let Some(site) = get_site(&request) {
+                        if let Some(site_pubkey) = site.config.get("pubkey") {
+                            if cmd.event.pubkey != site_pubkey.as_str().unwrap() {
+                                log::info!(
+                                    "Ignoring event for unknown pubkey: {}.",
+                                    cmd.event.pubkey
+                                );
+                                continue;
+                            }
+                        } else {
+                            log::info!("Ignoring event because site has no pubkey.");
                             continue;
                         }
                     } else {
-                        log::info!("Ignoring event because site has no pubkey.");
-                        continue;
+                        return Ok(());
                     }
                 }
 
@@ -136,13 +134,10 @@ async fn handle_websocket(
                     || cmd.event.kind == nostr::EVENT_KIND_LONG_FORM
                     || cmd.event.kind == nostr::EVENT_KIND_LONG_FORM_DRAFT
                 {
-                    {
-                        let host = request.host().unwrap().to_string();
-                        let sites = request.state().sites.read().unwrap();
-                        if !sites.contains_key(&host) {
-                            return Ok(());
-                        }
-                        sites.get(&host).unwrap().add_content(&cmd.event);
+                    if let Some(site) = get_site(&request) {
+                        site.add_content(&cmd.event);
+                    } else {
+                        return Ok(());
                     }
                     ws.send_json(&json!(vec![
                         serde_json::Value::String("OK".to_string()),
@@ -154,15 +149,11 @@ async fn handle_websocket(
                     .unwrap();
                 } else if cmd.event.kind == nostr::EVENT_KIND_DELETE {
                     let post_removed: bool;
-                    {
-                        let host = request.host().unwrap().to_string();
-                        let sites = request.state().sites.read().unwrap();
-                        if !sites.contains_key(&host) {
-                            return Ok(());
-                        }
-                        post_removed = sites.get(&host).unwrap().remove_content(&cmd.event);
+                    if let Some(site) = get_site(&request) {
+                        post_removed = site.remove_content(&cmd.event);
+                    } else {
+                        return Ok(());
                     }
-
                     ws.send_json(&json!(vec![
                         serde_json::Value::String("OK".to_string()),
                         serde_json::Value::String(cmd.event.id.to_string()),
@@ -190,27 +181,26 @@ async fn handle_websocket(
                         .map(|f| f.as_i64().unwrap())
                         .collect();
 
-                    let host = request.host().unwrap().to_string();
-                    let sites = request.state().sites.read().unwrap();
-                    if !sites.contains_key(&host) {
-                        return Ok(());
-                    };
-                    let site = sites.get(&host).unwrap();
-                    let resources = site.resources.read().unwrap();
-                    for resource in resources.values() {
-                        // NB: we are currently only returning resources with underlying events,
-                        // but we could actually return *all* resources by generating an event for them
-                        // and signing it with a key from config.
-                        if let Some(event_ref) = resource.event_ref.clone() {
-                            if filter_kinds.contains(&event_ref.kind) {
-                                if let Some((front_matter, content)) = resource.read() {
-                                    if let Some(event) = nostr::parse_event(&front_matter, &content)
-                                    {
-                                        events.push(event);
+                    if let Some(site) = get_site(&request) {
+                        let resources = site.resources.read().unwrap();
+                        for resource in resources.values() {
+                            // NB: we are currently only returning resources with underlying events,
+                            // but we could actually return *all* resources by generating an event for them
+                            // and signing it with a key from config.
+                            if let Some(event_ref) = resource.event_ref.clone() {
+                                if filter_kinds.contains(&event_ref.kind) {
+                                    if let Some((front_matter, content)) = resource.read() {
+                                        if let Some(event) =
+                                            nostr::parse_event(&front_matter, &content)
+                                        {
+                                            events.push(event);
+                                        }
                                     }
                                 }
                             }
                         }
+                    } else {
+                        return Ok(());
                     }
                 }
 
@@ -258,20 +248,29 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
         }
     }
 
-    let host = request.host().unwrap().to_string();
-    let sites = state.sites.read().unwrap();
-    let site = if sites.contains_key(&host) {
-        sites.get(&host).unwrap()
-    } else {
-        return Ok(Response::new(StatusCode::NotFound));
-    };
-
-    {
+    if let Some(site) = get_site(&request) {
         let resources = site.resources.read().unwrap();
         match resources.get("/index") {
-            Some(..) => Ok(render_and_build_response(site, "/index".to_owned())),
+            Some(..) => Ok(render_and_build_response(&site, "/index".to_owned())),
             None => Ok(Response::new(StatusCode::NotFound)),
         }
+    } else {
+        return Ok(Response::new(StatusCode::NotFound));
+    }
+}
+
+fn get_site(request: &Request<State>) -> Option<Site> {
+    let host = request.host().unwrap().to_string();
+    let sites = request.state().sites.read().unwrap();
+
+    if !sites.contains_key(&host) {
+        if sites.len() == 1 {
+            return Some(sites.values().into_iter().next().unwrap().clone());
+        } else {
+            return None;
+        }
+    } else {
+        return sites.get(&host).cloned();
     }
 }
 
@@ -305,73 +304,68 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
             .build());
     }
 
-    let host = request.host().unwrap().to_string();
-    let sites = request.state().sites.read().unwrap();
+    if let Some(site) = get_site(&request) {
+        if let Some((mime, response)) = site::render_standard_resource(path, &site) {
+            return Ok(Response::builder(StatusCode::Ok)
+                .content_type(mime)
+                .header("Access-Control-Allow-Origin", "*")
+                .body(response)
+                .build());
+        }
 
-    if !sites.contains_key(&host) {
-        return Ok(Response::new(StatusCode::NotFound));
-    }
-
-    let site = sites.get(&host).unwrap();
-
-    if let Some((mime, response)) = site::render_standard_resource(path, site) {
-        return Ok(Response::builder(StatusCode::Ok)
-            .content_type(mime)
-            .header("Access-Control-Allow-Origin", "*")
-            .body(response)
-            .build());
-    }
-
-    let existing_posts: Vec<String>;
-    {
-        let posts = site.resources.read().unwrap();
-        existing_posts = posts.keys().cloned().collect();
-    }
-    let mut resource_path = format!("/{}", &path);
-    if existing_posts.contains(&resource_path) {
-        Ok(render_and_build_response(site, resource_path))
-    } else {
-        resource_path = format!("{}/index", &resource_path);
+        let existing_posts: Vec<String>;
+        {
+            let posts = site.resources.read().unwrap();
+            existing_posts = posts.keys().cloned().collect();
+        }
+        let mut resource_path = format!("/{}", &path);
         if existing_posts.contains(&resource_path) {
-            Ok(render_and_build_response(site, resource_path))
+            Ok(render_and_build_response(&site, resource_path))
         } else {
-            resource_path = format!("{}/{}", site.path, path);
-            for part in resource_path.split('/').collect::<Vec<_>>() {
-                let first_char = part.chars().next().unwrap();
-                if first_char == '_' || (first_char == '.' && part.len() > 1) {
-                    return Ok(Response::builder(StatusCode::NotFound).build());
-                }
-            }
-            if PathBuf::from(&resource_path).exists() {
-                // look for a static file
-                let raw_content = fs::read(&resource_path).unwrap();
-                let guess = mime_guess::from_path(resource_path);
-                let mime = mime::Mime::from_str(guess.first().unwrap().essence_str()).unwrap();
-                Ok(build_raw_response(raw_content, mime))
+            resource_path = format!("{}/index", &resource_path);
+            if existing_posts.contains(&resource_path) {
+                Ok(render_and_build_response(&site, resource_path))
             } else {
-                // look for an uploaded file
-                if let Some(sha256) = sha256 {
-                    resource_path = format!("{}/_content/files/{}", site.path, sha256);
-                    if PathBuf::from(&resource_path).exists() {
-                        let raw_content = fs::read(&resource_path).unwrap();
-                        let metadata_file = File::open(&format!(
-                            "{}/_content/files/{}.metadata.json",
-                            site.path, sha256
-                        ))
-                        .unwrap();
-                        let metadata_reader = BufReader::new(metadata_file);
-                        let metadata: FileMetadata =
-                            serde_json::from_reader(metadata_reader).unwrap();
-                        let mime = mime::Mime::from_str(&metadata.content_type).unwrap();
-                        Ok(build_raw_response(raw_content, mime))
+                resource_path = format!("{}/{}", site.path, path);
+                for part in resource_path.split('/').collect::<Vec<_>>() {
+                    let first_char = part.chars().next().unwrap();
+                    if first_char == '_' || (first_char == '.' && part.len() > 1) {
+                        return Ok(Response::builder(StatusCode::NotFound).build());
+                    }
+                }
+                if PathBuf::from(&resource_path).exists() {
+                    // look for a static file
+                    let raw_content = fs::read(&resource_path).unwrap();
+                    let guess = mime_guess::from_path(resource_path);
+                    let mime = mime::Mime::from_str(guess.first().unwrap().essence_str()).unwrap();
+                    Ok(build_raw_response(raw_content, mime))
+                } else {
+                    // look for an uploaded file
+                    if let Some(sha256) = sha256 {
+                        resource_path = format!("{}/_content/files/{}", site.path, sha256);
+                        if PathBuf::from(&resource_path).exists() {
+                            let raw_content = fs::read(&resource_path).unwrap();
+                            let metadata_file = File::open(&format!(
+                                "{}/_content/files/{}.metadata.json",
+                                site.path, sha256
+                            ))
+                            .unwrap();
+                            let metadata_reader = BufReader::new(metadata_file);
+                            let metadata: FileMetadata =
+                                serde_json::from_reader(metadata_reader).unwrap();
+                            let mime = mime::Mime::from_str(&metadata.content_type).unwrap();
+                            Ok(build_raw_response(raw_content, mime))
+                        } else {
+                            Ok(Response::builder(StatusCode::NotFound).build())
+                        }
                     } else {
                         Ok(Response::builder(StatusCode::NotFound).build())
                     }
-                } else {
-                    Ok(Response::builder(StatusCode::NotFound).build())
                 }
             }
         }
+    } else {
+        return Ok(Response::new(StatusCode::NotFound));
     }
 }
 
@@ -425,33 +419,7 @@ async fn handle_post_site(mut request: Request<State>) -> tide::Result<Response>
             return Ok(Response::builder(StatusCode::BadRequest).build());
         }
 
-        let path = format!("./sites/{}", domain);
-        fs::create_dir_all(&path).unwrap();
-
-        default_theme::generate(&format!("./sites/{}/", domain));
-
-        let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
-        tera.autoescape_on(vec![]);
-
-        let config_content = format!(
-            "[site]\npubkey = \"{}\"\nurl = \"https://{}\"\ntitle = \"{}\"\ntagline = \"{}\"",
-            key.unwrap(),
-            domain,
-            "Untitled site", // TODO: get from the request?
-            "Undefined tagline"
-        );
-        fs::write(format!("./sites/{}/_config.toml", domain), &config_content).unwrap();
-
-        let site_config = toml::from_str::<HashMap<String, toml::Value>>(&config_content).unwrap();
-
-        let site = Site {
-            config: site_config.get("site").unwrap().clone(),
-            path,
-            data: Arc::new(RwLock::new(HashMap::new())),
-            resources: Arc::new(RwLock::new(HashMap::new())),
-            tera: Arc::new(RwLock::new(tera)),
-        };
-        site.load_resources();
+        let site = site::create_site(&domain, key);
 
         let sites = &mut state.sites.write().unwrap();
         sites.insert(domain, site);
@@ -491,30 +459,26 @@ async fn handle_get_sites(request: Request<State>) -> tide::Result<Response> {
 
 async fn handle_list_request(request: Request<State>) -> tide::Result<Response> {
     let site_path = {
-        let host = request.host().unwrap().to_string();
-        let sites = request.state().sites.read().unwrap();
-        if !sites.contains_key(&host) {
-            return Ok(Response::builder(StatusCode::NotFound).build());
-        };
-
-        let site = sites.get(&host).unwrap();
-
-        let pubkey = request.param("pubkey").unwrap();
-        if let Some(site_pubkey) = site.config.get("pubkey") {
-            if site_pubkey.as_str().unwrap() != pubkey {
-                log::info!("Invalid key.");
+        if let Some(site) = get_site(&request) {
+            let pubkey = request.param("pubkey").unwrap();
+            if let Some(site_pubkey) = site.config.get("pubkey") {
+                if site_pubkey.as_str().unwrap() != pubkey {
+                    log::info!("Invalid key.");
+                    return Ok(Response::builder(StatusCode::NotFound)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .build());
+                }
+            } else {
+                log::info!("The site has no pubkey.");
                 return Ok(Response::builder(StatusCode::NotFound)
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
-        } else {
-            log::info!("The site has no pubkey.");
-            return Ok(Response::builder(StatusCode::NotFound)
-                .header("Access-Control-Allow-Origin", "*")
-                .build());
-        }
 
-        site.path.clone()
+            site.path.clone()
+        } else {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        }
     };
 
     let paths = match fs::read_dir(format!("{}/_content/files", site_path)) {
@@ -552,36 +516,32 @@ async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Resp
     }
 
     let site_path = {
-        let host = request.host().unwrap().to_string();
-        let sites = request.state().sites.read().unwrap();
-        if !sites.contains_key(&host) {
-            return Ok(Response::builder(StatusCode::NotFound).build());
-        };
-
-        let site = sites.get(&host).unwrap();
-
-        if let Some(pubkey) = blossom_auth(&request, "upload") {
-            if let Some(site_pubkey) = site.config.get("pubkey") {
-                if site_pubkey.as_str().unwrap() != pubkey {
-                    log::info!("Non-matching key.");
+        if let Some(site) = get_site(&request) {
+            if let Some(pubkey) = blossom_auth(&request, "upload") {
+                if let Some(site_pubkey) = site.config.get("pubkey") {
+                    if site_pubkey.as_str().unwrap() != pubkey {
+                        log::info!("Non-matching key.");
+                        return Ok(Response::builder(StatusCode::Unauthorized)
+                            .header("Access-Control-Allow-Origin", "*")
+                            .build());
+                    }
+                } else {
+                    log::info!("The site has no pubkey.");
                     return Ok(Response::builder(StatusCode::Unauthorized)
                         .header("Access-Control-Allow-Origin", "*")
                         .build());
                 }
             } else {
-                log::info!("The site has no pubkey.");
+                log::info!("Missing Blossom auth.");
                 return Ok(Response::builder(StatusCode::Unauthorized)
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
-        } else {
-            log::info!("Missing Blossom auth.");
-            return Ok(Response::builder(StatusCode::Unauthorized)
-                .header("Access-Control-Allow-Origin", "*")
-                .build());
-        }
 
-        site.path.clone()
+            site.path.clone()
+        } else {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        }
     };
 
     let bytes = request.body_bytes().await?;
@@ -621,36 +581,32 @@ async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Resp
 
 async fn handle_delete_request(request: Request<State>) -> tide::Result<Response> {
     let site_path = {
-        let host = request.host().unwrap().to_string();
-        let sites = request.state().sites.read().unwrap();
-        if !sites.contains_key(&host) {
-            return Ok(Response::builder(StatusCode::NotFound).build());
-        };
-
-        let site = sites.get(&host).unwrap();
-
-        if let Some(pubkey) = blossom_auth(&request, "delete") {
-            if let Some(site_pubkey) = site.config.get("pubkey") {
-                if site_pubkey.as_str().unwrap() != pubkey {
-                    log::info!("Non-matching key.");
+        if let Some(site) = get_site(&request) {
+            if let Some(pubkey) = blossom_auth(&request, "delete") {
+                if let Some(site_pubkey) = site.config.get("pubkey") {
+                    if site_pubkey.as_str().unwrap() != pubkey {
+                        log::info!("Non-matching key.");
+                        return Ok(Response::builder(StatusCode::Unauthorized)
+                            .header("Access-Control-Allow-Origin", "*")
+                            .build());
+                    }
+                } else {
+                    log::info!("Site has no pubkey.");
                     return Ok(Response::builder(StatusCode::Unauthorized)
                         .header("Access-Control-Allow-Origin", "*")
                         .build());
                 }
             } else {
-                log::info!("Site has no pubkey.");
+                log::info!("Missing Blossom auth.");
                 return Ok(Response::builder(StatusCode::Unauthorized)
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
-        } else {
-            log::info!("Missing Blossom auth.");
-            return Ok(Response::builder(StatusCode::Unauthorized)
-                .header("Access-Control-Allow-Origin", "*")
-                .build());
-        }
 
-        site.path.clone()
+            site.path.clone()
+        } else {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        }
     };
 
     let hash = request.param("sha256").unwrap();
@@ -675,9 +631,39 @@ async fn main() -> Result<(), std::io::Error> {
 
     femme::with_level(log::LevelFilter::Info);
 
+    let sites;
+
+    let existing_sites = site::load_sites();
+
+    if existing_sites.len() == 0 {
+        let stdin = io::stdin();
+        let mut response = String::new();
+        while response != "n" && response != "y" {
+            print!("No sites found. Create a default site [y/n]? ");
+            io::stdout().flush().unwrap();
+            response = stdin.lock().lines().next().unwrap().unwrap().to_lowercase();
+        }
+
+        if response == "y" {
+            print!("Domain: ");
+            io::stdout().flush().unwrap();
+            let domain = stdin.lock().lines().next().unwrap().unwrap().to_lowercase();
+            print!("Admin pubkey: ");
+            io::stdout().flush().unwrap();
+            let admin_pubkey = stdin.lock().lines().next().unwrap().unwrap().to_lowercase();
+            let site = site::create_site(&domain, Some(admin_pubkey));
+
+            sites = [(domain, site)].iter().cloned().collect();
+        } else {
+            sites = HashMap::new();
+        }
+    } else {
+        sites = existing_sites;
+    }
+
     let mut app = tide::with_state(State {
         admin_domain: args.admin_domain.clone(),
-        sites: Arc::new(RwLock::new(site::load_sites())),
+        sites: Arc::new(RwLock::new(sites)),
     });
 
     app.with(log::LogMiddleware::new());

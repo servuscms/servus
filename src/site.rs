@@ -14,6 +14,10 @@ use walkdir::WalkDir;
 
 use crate::{content, nostr};
 
+mod default_theme {
+    include!(concat!(env!("OUT_DIR"), "/default_theme.rs"));
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct ServusMetadata {
     version: String,
@@ -591,6 +595,38 @@ pub fn load_sites() -> HashMap<String, Site> {
     println!("{} sites loaded!", sites.len());
 
     sites
+}
+
+pub fn create_site(domain: &str, admin_pubkey: Option<String>) -> Site {
+    let path = format!("./sites/{}", domain);
+    fs::create_dir_all(&path).unwrap();
+
+    default_theme::generate(&format!("./sites/{}/", domain));
+
+    let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
+    tera.autoescape_on(vec![]);
+
+    let config_content = format!(
+        "[site]\npubkey = \"{}\"\nurl = \"https://{}\"\ntitle = \"{}\"\ntagline = \"{}\"",
+        admin_pubkey.unwrap_or("".to_string()),
+        domain,
+        "Untitled site", // TODO: get from the request?
+        "Undefined tagline"
+    );
+    fs::write(format!("./sites/{}/_config.toml", domain), &config_content).unwrap();
+
+    let site_config = toml::from_str::<HashMap<String, toml::Value>>(&config_content).unwrap();
+
+    let site = Site {
+        config: site_config.get("site").unwrap().clone(),
+        path,
+        data: Arc::new(RwLock::new(HashMap::new())),
+        resources: Arc::new(RwLock::new(HashMap::new())),
+        tera: Arc::new(RwLock::new(tera)),
+    };
+    site.load_resources();
+
+    site
 }
 
 fn get_resource_kind(event: &nostr::Event) -> Option<ResourceKind> {
