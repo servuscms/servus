@@ -212,3 +212,19 @@ The *admin interface* requires you to have a Nostr extension such as [Alby](http
 ## Any questions?
 
 If you read this far without giving up and still want to try it yourself, feel free to open GitHub issues with any problems you encounter and I'll try to help. I currently use *Servus* to run two live sites, but it is probably not for everyone, yet...
+
+## Want to try it out?
+
+It's very simple to get up and running!
+
+### On Linux
+
+ * `wget https://github.com/servuscms/servus/releases/latest/download/servus-linux.tar.gz`
+ * `tar xzfv servus-linux.tar.gz`
+ * `./servus`
+
+This will work both locally (you can access your site using http://localhost:4884) and on a bare VPS (you can use its public IP address or DNS domain to access the site)!
+
+### On Windows or OSX
+
+Windows and OSX builds are also available from the GitHub [release page](https://github.com/servuscms/servus/releases/latest)! Download, unzip and run it from a terminal.

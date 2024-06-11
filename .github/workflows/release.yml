@@ -1,0 +1,35 @@
+on:
+  release:
+    types: [created]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    permissions: write-all
+    name: release ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-gnu
+            archive_type: zip
+            archive_name: servus-windows
+          - target: x86_64-unknown-linux-musl
+            archive_type: tar.gz
+            archive_name: servus-linux
+          - target: x86_64-apple-darwin
+            archive_type: zip
+            archive_name: servus-macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rust-build/rust-build.action@v1.4.5
+        name: Compile and release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          RUSTTARGET: ${{ matrix.target }}
+          ARCHIVE_TYPES: ${{ matrix.archive_type }}
+          ARCHIVE_NAME: ${{ matrix.archive_name }}
