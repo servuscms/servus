@@ -25,8 +25,13 @@
                 return `Nostr ${btoa(JSON.stringify(authEvent))}`;
             }
 
-            async function getBlossomAuthHeader(method) {
-                let authEvent = await getEvent(24242, "", [['t', method]]);
+            async function getBlossomAuthHeader(method, sha256) {
+                let expiration = new Date();
+                expiration.setDate(expiration.getDate() + 10); // 10 days from now
+                expiration = Math.trunc(expiration.valueOf() / 1000);
+                let content = `${method.charAt(0).toUpperCase()}${method.slice(1)} file`; // "Upload file" / "Delete file"
+                let tags = [['t', method], ['expiration', expiration.toString()], ['x', sha256]];
+                let authEvent = await getEvent(24242, content, tags);
                 return `Nostr ${btoa(JSON.stringify(authEvent))}`;
             }
 
@@ -168,10 +173,11 @@
             async function uploadFileBlossom(site) {
                 const endpoint = `${getBlossomBaseUrl(site.domain)}/upload`;
                 let fileInput = document.querySelector('#fileInput');
+                let sha256 = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", await fileInput.files[0].arrayBuffer())));
                 const res = await fetch(new URL(endpoint), {
                     method: "PUT",
                     body: fileInput.files[0],
-                    headers: { authorization: await getBlossomAuthHeader('upload') },
+                    headers: { authorization: await getBlossomAuthHeader('upload', sha256) },
                 });
                 return (await res.json());
             }
@@ -181,7 +187,7 @@
                 await fetch(new URL(endpoint),
                     {
                         method: 'DELETE',
-                        headers: { authorization: await getBlossomAuthHeader('delete') }
+                        headers: { authorization: await getBlossomAuthHeader('delete', sha256) }
                     });
             }
         </script>

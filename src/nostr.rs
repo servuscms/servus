@@ -170,8 +170,12 @@ impl Event {
         }
 
         let tags = self.get_tags_hash();
-        // TODO: check expiration
         if tags.get("t")? != method {
+            return None;
+        }
+        let expiration = tags.get("expiration")?;
+        let expiration = UNIX_EPOCH + Duration::from_secs(expiration.parse::<u64>().unwrap());
+        if expiration < now {
             return None;
         }
 
