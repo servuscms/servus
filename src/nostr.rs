@@ -36,6 +36,7 @@ pub const EVENT_KIND_BLOSSOM: i64 = 24242;
 pub const EVENT_KIND_AUTH: i64 = 27235;
 pub const EVENT_KIND_LONG_FORM: i64 = 30023;
 pub const EVENT_KIND_LONG_FORM_DRAFT: i64 = 30024;
+pub const EVENT_KIND_CUSTOM_DATA: i64 = 30078;
 
 lazy_static! {
     pub static ref SECP: Secp256k1<VerifyOnly> = Secp256k1::verification_only();
@@ -68,27 +69,28 @@ impl Event {
         tags
     }
 
-    pub fn get_long_form_tag(&self, tag: &str) -> Option<String> {
+    fn get_tag(&self, tag: &str) -> Option<String> {
+        self.get_tags_hash().get(tag).cloned()
+    }
+
+    pub fn get_d_tag(&self) -> Option<String> {
+        self.get_tag("d")
+    }
+
+    pub fn get_long_form_summary(&self) -> Option<String> {
         if self.kind != EVENT_KIND_LONG_FORM && self.kind != EVENT_KIND_LONG_FORM_DRAFT {
             return None;
         }
 
-        self.get_tags_hash().get(tag).cloned()
-    }
-
-    pub fn get_long_form_slug(&self) -> Option<String> {
-        self.get_long_form_tag("d")
-    }
-
-    pub fn get_long_form_summary(&self) -> Option<String> {
-        self.get_long_form_tag("summary")
+        self.get_tag("summary")
     }
 
     pub fn get_long_form_published_at(&self) -> Option<NaiveDateTime> {
-        let ts = self
-            .get_long_form_tag("published_at")?
-            .parse::<i64>()
-            .unwrap();
+        if self.kind != EVENT_KIND_LONG_FORM && self.kind != EVENT_KIND_LONG_FORM_DRAFT {
+            return None;
+        }
+
+        let ts = self.get_tag("published_at")?.parse::<i64>().unwrap();
 
         DateTime::from_timestamp(ts, 0).map(|d| d.naive_utc())
     }

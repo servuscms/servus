@@ -178,19 +178,12 @@ async fn handle_websocket(
                         .collect();
 
                     if let Some(site) = get_site(&request) {
-                        let resources = site.resources.read().unwrap();
-                        for resource in resources.values() {
-                            // NB: we are currently only returning resources with underlying events,
-                            // but we could actually return *all* resources by generating an event for them
-                            // and signing it with a key from config.
-                            if let Some(event_ref) = resource.event_ref.clone() {
-                                if filter_kinds.contains(&event_ref.kind) {
-                                    if let Some((front_matter, content)) = resource.read() {
-                                        if let Some(event) =
-                                            nostr::parse_event(&front_matter, &content)
-                                        {
-                                            events.push(event);
-                                        }
+                        for event_ref in site.events.read().unwrap().values() {
+                            if filter_kinds.contains(&event_ref.kind) {
+                                if let Some((front_matter, content)) = event_ref.read() {
+                                    if let Some(event) = nostr::parse_event(&front_matter, &content)
+                                    {
+                                        events.push(event);
                                     }
                                 }
                             }
