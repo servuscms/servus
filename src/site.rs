@@ -220,6 +220,23 @@ impl Site {
         };
 
         let mut events = self.events.write().unwrap();
+
+        let mut matched_event_id: Option<String> = None;
+        {
+            for event_ref in events.values() {
+                if event_d_tag.is_some() {
+                    if event_ref.d_tag == event_d_tag {
+                        matched_event_id = Some(event_ref.id.to_owned());
+                    }
+                }
+            }
+        }
+
+        if let Some(matched_event_id) = matched_event_id {
+            log::info!("Removing (outdated) event: {}!", &matched_event_id);
+            events.remove(&matched_event_id);
+        }
+
         events.insert(event.id.to_owned(), event_ref.clone());
 
         if let Some(kind) = kind {
@@ -739,7 +756,7 @@ pub fn create_site(domain: &str, admin_pubkey: Option<String>) -> Site {
 fn get_resource_kind(event: &nostr::Event) -> Option<ResourceKind> {
     let date = event.get_long_form_published_at();
     match event.kind {
-        nostr::EVENT_KIND_LONG_FORM => {
+        nostr::EVENT_KIND_LONG_FORM | nostr::EVENT_KIND_LONG_FORM_DRAFT => {
             if date.is_some() {
                 Some(ResourceKind::Post)
             } else {

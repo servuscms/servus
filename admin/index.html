@@ -1,6 +1,6 @@
 <html>
     <head>
-        <link href="https://cdn.jsdelivr.net/npm/daisyui@3.6.2/dist/full.css" rel="stylesheet" type="text/css" />
+        <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" type="text/css" />
         <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
         <script src="https://unpkg.com/alpinejs" defer></script>
         <script>
@@ -37,6 +37,9 @@
             }
 
             async function getSites(sites) {
+                while (!window.nostr) {
+                    await new Promise(r => setTimeout(r, 0));
+                }
                 let endpoint = `${API_BASE_URL}/api/sites`;
                 sites.length = 0;
                 let response = await fetch(endpoint, {
@@ -47,7 +50,7 @@
                 }
             }
 
-            async function saveSite(site) {
+            async function saveSite(domain) {
                 let endpoint = `${API_BASE_URL}/api/sites`;
                 let response = await fetch(endpoint, {
                     method: 'POST',
@@ -57,7 +60,7 @@
                         'Authorization': await getNostrAuthHeader(window.location.protocol + endpoint, 'POST'),
                     },
                     body: JSON.stringify({
-                        domain: site.domain,
+                        domain: domain,
                     }),
                 });
             }
@@ -115,8 +118,14 @@
                 return hex;
             }
 
-            function savePost(post, kind, published_at) {
+            function savePost(post, kind, published_at, onOK) {
                 let ws = new WebSocket(getWebSocketUrl(post.site.domain));
+                ws.onmessage = (e) => {
+                    let r = JSON.parse(e.data);
+                    if (r[0] === 'OK') {
+                        onOK();
+                    }
+                };
                 ws.onopen = async (e) => {
                     if (post.d_tag === undefined) {
                         post.d_tag = post.title.toLowerCase().replace(/ /g, "-").replace(/[^\w-]+/g, "");
@@ -130,8 +139,14 @@
                 };
             }
 
-            function deleteEvent(domain, deletionTag) {
+            function deleteEvent(domain, deletionTag, onOK) {
                let ws = new WebSocket(getWebSocketUrl(domain));
+               ws.onmessage = (e) => {
+                    let r = JSON.parse(e.data);
+                    if (r[0] === 'OK') {
+                        onOK();
+                    }
+               };
                ws.onopen = async (e) => {
                    ws.send(JSON.stringify(['EVENT', await getEvent(EVENT_KIND_DELETION, "", [deletionTag])]));
                };
@@ -163,8 +178,14 @@
                 }
             }
 
-            function saveNote(note) {
+            function saveNote(note, onOK) {
                 let ws = new WebSocket(getWebSocketUrl(note.site.domain));
+                ws.onmessage = (e) => {
+                    let r = JSON.parse(e.data);
+                    if (r[0] === 'OK') {
+                        onOK();
+                    }
+                };
                 ws.onopen = async (e) => {
                     ws.send(JSON.stringify(['EVENT', await getEvent(EVENT_KIND_NOTE, note.content, [])]));
                 };
@@ -193,149 +214,185 @@
         </script>
     </head>
     <body>
-        <div class="w-full mx-auto" x-data="{site: null, post: null, note: null, noteManager: false, fileManager: false, sites: [], posts: [], notes: [], files: []}">
+        <div class="w-full mx-auto" x-data="{site: null, post: null, note: null, noteManager: false, fileManager: false, postManager: false, pageManager: false, sites: [], posts: [], notes: [], files: []}" x-init="await getSites(sites); site = sites[0];">
             <div class="navbar bg-base-200">
-                <div class="navbar-start">
-                    <a class="btn btn-ghost normal-case text-xl">Servus</a>
+                <div class="flex-1">
+                    <a class="btn btn-ghost text-xl">Servus!</a>
                 </div>
-                <div class="navbar-end">
-                    <label for="admin-drawer" class="btn btn-primary drawer-button md:hidden">Admin</label>
-                </div>
-            </div>
-            <div class="drawer md:drawer-open">
-                <input id="admin-drawer" type="checkbox" class="drawer-toggle" />
-                <div class="drawer-content flex flex-col items-center justify-center">
-                    <template x-if="site && post">
-                        <div class="w-3/4 mt-24">
-                            <div class="form-control w-full max-w-full">
-                                <label class="label" for="title">
-                                    <span class="label-text">Title</span>
-                                </label>
-                                <input x-model="post.title" type="text" name="title" class="input input-bordered" />
-                            </div>
-                            <div class="form-control mt-2">
-                                <label class="label" for="url">
-                                    <span class="label-text">URL</span>
-                                </label>
-                                <div>
-                                    <span x-text="post ? 'http://' + post.site.domain + '/' : ''"></span>
-                                    <input x-model="post.d_tag" type="text" name="slug" class="input input-bordered" :disabled="post.persisted" />
-                                </div>
-                            </div>
-                            <div class="form-control mt-2">
-                                <label class="label" for="content">
-                                    <span class="label-text">Content</span>
-                                </label>
-                                <textarea x-model="post.content" rows="6" class="textarea textarea-bordered h-48"></textarea>
-                            </div>
-                            <div class="w-full flex justify-center items-center mt-2">
-                                <div class="w-full flex justify-center items-center gap-2">
-                                    <div class="w-1/2 flex flex-row gap-2">
-                                        <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM, Math.floor(Date.now() / 1000).toString()); post = null; site = null;" class="btn btn-primary mt-1">Save</button>
-                                        <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM_DRAFT, Math.floor(Date.now() / 1000).toString()); post = null; site = null;" class="btn btn-primary mt-1">Save draft</button>
-                                        <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM, undefined); post = null; site = null;" class="btn btn-primary mt-1">Save page</button>
-                                        <button x-on:click="if (!post.persisted) posts = posts.slice(0, -1); site = null; post = null" class="btn mt-1">Cancel</button>
-                                    </div>
-                                    <template x-if="post.d_tag !== undefined && post.persisted">
-                                        <div class="w-1/2 flex flex-row-reverse">
-                                            <button x-on:click="if (confirm('Are you sure?')) { deleteEvent(post.site.domain, ['a', `${post.kind}:${await window.nostr.getPublicKey()}:${post.d_tag}`]); post = null; site = null; await getPosts(sites, posts); }" class="btn btn-error mt-1">Delete</button>
-                                        </div>
+                <div class="flex-none">
+                    <ul class="menu menu-horizontal px-1">
+                        <li>
+                            <details>
+                                <summary>Sites</summary>
+                                <ul class="bg-base-100 rounded-t-none p-2">
+                                    <template x-for="s in sites">
+                                        <li><a x-on:click="site = s" x-text="s.domain"></a></li>
                                     </template>
-                                </div>
-                            </div>
-                        </div>
-                    </template>
-                    <template x-if="site && !post && !noteManager && !fileManager">
-                        <div class="w-3/4 mt-24">
-                            <div class="form-control w-full max-w-full">
+                                    <li><a x-on:click="site = null">New</a></li>
+                                </ul>
+                            </details>
+                        </li>
+                    </ul>
+                </div>
+            </div> <!-- /navbar -->
+            <div>
+                <template x-if="!site">
+                    <div class="flex items-center justify-center">
+                        <div class="w-3/4 mt-24" x-data="{domain: ''}">
+                            <div class="form-control">
                                 <label class="label" for="domain">
                                     <span class="label-text">Domain</span>
                                 </label>
-                                <input x-model="site.domain" type="text" name="domain" class="input input-bordered" />
+                                <input x-model="domain" type="text" name="domain" class="input input-bordered input-lg" />
                             </div>
                             <div class="w-full flex justify-center items-center mt-2">
                                 <div class="w-1/2 flex justify-center items-center gap-2">
-                                    <button x-on:click="site = null" class="btn mt-1">Cancel</button>
-                                    <button x-on:click="await saveSite(site); sites = sites.concat(site); site = null;" class="btn btn-primary mt-1">Save</button>
+                                    <button x-on:click="await saveSite(domain); await getSites(sites); site = sites[0];" class="btn btn-primary mt-1">Save</button>
                                 </div>
                             </div>
                         </div>
-                    </template>
-                    <template x-if="site && !post && noteManager && !fileManager">
-                        <div>
-                            <ul class="list-disc">
-                                <template x-for="n in notes">
-                                    <li><span x-text="n.content"></span> <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { deleteEvent(n.site.domain, ['e', n.event_id]); getNotes(site, notes); }">Delete</button></li>
-                                </template>
-                            </ul>
-                            <div class="w-3/4 mt-24">
-                                <div class="form-control mt-2">
-                                    <label class="label" for="content">
-                                        <span class="label-text">Content</span>
-                                    </label>
-                                    <textarea x-model="note.content" rows="6" class="textarea textarea-bordered h-48"></textarea>
+                    </div>
+                </template> <!-- /!site -->
+                <template x-if="site">
+                    <div>
+                        <h1 class="text-2xl text-center" x-text="site.domain"></h1>
+                        <div class="flex justify-center items-center mt-12">
+                            <template x-if="!noteManager && !fileManager && !pageManager && !postManager">
+                                <div>
+                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; noteManager = true; getNotes(site, notes); note = {'content': '', 'site': site}">Notes</a>
+                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; fileManager = true; await getFiles(site, files);">Files</a>
+                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; pageManager = true; await getPosts(sites, posts);">Pages</a>
+                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; postManager = true; await getPosts(sites, posts);">Posts</a>
                                 </div>
-                                <div class="w-full flex justify-center items-center mt-2">
-                                    <div class="w-full flex justify-center items-center gap-2">
-                                        <div class="w-1/2 flex flex-row gap-2">
-                                            <button x-on:click="saveNote(note); getNotes(site, notes); note = {'site': site, 'content': ''};" class="btn btn-primary mt-1">Save</button>
+                            </template>
+                            <template x-if="noteManager">
+                                <div>
+                                    <a class="btn btn-lg btn-primary btn-outline" x-on:click="noteManager = false">Back</a>
+                                    <template x-for="n in notes">
+                                        <div class="card bg-base-300 w-96 m-2 shadow-xl">
+                                            <div class="card-body">
+                                                <p x-text="n.content"></p>
+                                                <div class="card-actions justify-end">
+                                                    <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { deleteEvent(n.site.domain, ['e', n.event_id], () => getNotes(site, notes)); }">Delete</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    <div>
+                                        <div class="form-control mt-2">
+                                            <label class="label" for="content">
+                                                <span class="label-text">Content</span>
+                                            </label>
+                                            <textarea x-model="note.content" rows="6" class="textarea textarea-bordered h-48"></textarea>
+                                        </div>
+                                        <div class="w-full flex justify-center items-center mt-2">
+                                            <div class="w-full flex justify-center items-center gap-2">
+                                                <div class="w-1/2 flex flex-row gap-2">
+                                                    <button x-on:click="saveNote(note, () => { getNotes(site, notes); note = {'site': site, 'content': ''}; });" class="btn btn-primary mt-1">Save</button>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
-                            </div>
-                         </div>
-                    </template>
-                    <template x-if="site && !post && !noteManager && fileManager">
-                        <div>
-                            <ul class="list-disc">
-                                <template x-for="f in files">
-                                    <li>
-                                        <span x-text="f.sha256"></span> (<span x-text="Math.floor(f.size / 1024)"></span> kb) <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { await deleteFile(site, f.sha256); getFiles(site, files); } ">Delete</button>
-                                    </li>
-                                </template>
-                            </ul>
-                            <div>
-                                <input type="file" id="fileInput" />
-                                <button x-on:click="await uploadFileBlossom(site); await getFiles(site, files);" class="btn btn-primary">Upload</button>
-                            </div>
-                        </div>
-                    </template>
-                </div>
-                <div class="drawer-side">
-                    <label for="admin-drawer" class="drawer-overlay"></label>
-                    <ul class="menu p-4 w-80 min-h-full bg-base-200 text-base-content">
-                        <li class="mb-2"><button x-on:click="await getSites(sites); await getPosts(sites, posts);" class="btn btn-primary">Refresh</button></li>
-                        <template x-for="s in sites">
-                            <div class="collapse collapse-arrow bg-base-200">
-                                <input type="radio" name="admin-accordion" /> 
-                                <div class="collapse-title text-xl font-medium">
-                                    <span class="text-2xl" x-text="s.domain"></span>
+                            </template> <!-- noteManager -->
+                            <template x-if="fileManager">
+                                <div>
+                                    <a class="btn btn-lg btn-primary btn-outline" x-on:click="fileManager = false">Back</a>
+                                    <template x-for="f in files">
+                                        <div class="card bg-base-300 w-96 m-2 shadow-xl">
+                                            <figure>
+                                                <img x-bind:src="`https://${site.domain}/${f.sha256}`" x-bind:alt="f.sha256" />
+                                            </figure>
+                                            <div class="card-body">
+                                                <p x-text="`${Math.floor(f.size / 1024)} kb`"></p>
+                                                <div class="card-actions justify-end">
+                                                    <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { await deleteFile(site, f.sha256); getFiles(site, files); }">Delete</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    <div>
+                                        <input type="file" id="fileInput" />
+                                        <button x-on:click="await uploadFileBlossom(site); await getFiles(site, files);" class="btn btn-primary">Upload</button>
+                                    </div>
                                 </div>
-                                <div class="collapse-content">
-                                    <ul class="p-4 bg-base-200 text-base-content">
-                                        <template x-for="p in posts">
-                                            <template x-if="p.site.domain === s.domain">
-                                                <li>
-                                                    <span>
-                                                        <template x-if="p.kind === EVENT_KIND_LONG_FORM_DRAFT">
-                                                            <span class="badge badge-primary">draft</span>
-                                                        </template>
-                                                        <a x-text="p.title" x-on:click="site = s; post = p; noteManager = false; fileManager = false;"></a>
-                                                    </span>
-                                                </li>
+                            </template> <!-- fileManager -->
+                            <template x-if="postManager || pageManager">
+                                <div>
+                                    <template x-if="post">
+                                        <div class="w-full mt-24">
+                                            <div class="form-control w-full max-w-full">
+                                                <label class="label" for="title">
+                                                    <span class="label-text">Title</span>
+                                                </label>
+                                                <input x-model="post.title" type="text" name="title" class="input input-bordered" />
+                                            </div>
+                                            <div class="form-control mt-2">
+                                                <label class="label" for="url">
+                                                    <span class="label-text">URL</span>
+                                                </label>
+                                                <div>
+                                                    <span x-text="post ? 'http://' + post.site.domain + '/' : ''"></span>
+                                                    <input x-model="post.d_tag" type="text" name="slug" class="input input-bordered" :disabled="post.persisted" />
+                                                </div>
+                                            </div>
+                                            <div class="form-control mt-2">
+                                                <label class="label" for="content">
+                                                    <span class="label-text">Content</span>
+                                                </label>
+                                                <textarea x-model="post.content" rows="6" class="textarea textarea-bordered h-48"></textarea>
+                                            </div>
+                                            <div class="w-full flex justify-center items-center mt-2">
+                                                <div class="w-full flex justify-center items-center gap-2">
+                                                    <template x-if="postManager">
+                                                        <div class="w-1/2 flex flex-row gap-2">
+                                                            <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM, Math.floor(Date.now() / 1000).toString(), async () => { post = null; await getPosts(sites, posts); });" class="btn btn-primary mt-1">Save</button>
+                                                            <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM_DRAFT, Math.floor(Date.now() / 1000).toString(), async () => { post = null; await getPosts(sites, posts); });" class="btn btn-primary mt-1">Save draft</button>
+                                                            <button x-on:click="post = null; await getPosts(sites, posts);" class="btn mt-1">Cancel</button>
+                                                        </div>
+                                                    </template>
+                                                    <template x-if="pageManager">
+                                                        <div class="w-1/2 flex flex-row gap-2">
+                                                            <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM, undefined, async () => { post = null; await getPosts(sites, posts); });" class="btn btn-primary mt-1">Save page</button>
+                                                            <button x-on:click="post = null; await getPosts(sites, posts);" class="btn mt-1">Cancel</button>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </template> <!-- post -->
+                                    <template x-if="!post">
+                                        <div>
+                                            <a class="btn btn-lg btn-primary btn-outline" x-on:click="postManager = false; pageManager = false;">Back</a>
+                                            <template x-for="p in posts">
+                                                <template x-if="site && p.site.domain === site.domain">
+                                                    <template x-if="(postManager && p.published_at !== undefined) || (pageManager && p.published_at === undefined)">
+                                                        <div class="card bg-base-300 w-96 m-2 shadow-xl">
+                                                            <div class="card-body">
+                                                                <h2 class="card-title" x-text="p.title"></h2>
+                                                                <template x-if="p.kind === EVENT_KIND_LONG_FORM_DRAFT">
+                                                                    <div class="badge badge-primary badge-outline">Draft</div>
+                                                                </template>
+                                                                <div class="card-actions justify-end">
+                                                                    <button class="btn" x-on:click="post = p">Edit</button>
+                                                                    <template x-if="p.d_tag !== undefined && p.persisted">
+                                                                        <button x-on:click="if (confirm('Are you sure?')) { deleteEvent(p.site.domain, ['a', `${p.kind}:${await window.nostr.getPublicKey()}:${p.d_tag}`], async () => await getPosts(sites, posts)); }" class="btn btn-error mt-1">Delete</button>
+                                                                    </template>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </template>
+                                                </template>
                                             </template>
-                                        </template>
-                                    </ul>
-                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = {'id': undefined, 'title': 'New post', 'content': 'New content', 'site': s, 'persisted': false}; posts = posts.concat(post); noteManager = false; fileManager = false;">New post</a>
-                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = null; noteManager = true; fileManager = false; getNotes(site, notes); note = {'content': '', 'site': s}">Notes</a>
-                                    <a class="btn btn-outline btn-primary" x-on:click="site = s; post = null; noteManager = false; fileManager = true; await getFiles(site, files);">Files</a>
+                                            <a class="btn btn-lg btn-primary" x-on:click="post = {'id': undefined, 'title': postManager ? 'New post' : 'New page', 'content': 'New content', 'site': site, 'persisted': false}; posts = posts.concat(post);">New</a>
+                                        </div>
+                                    </template> <!-- !post -->
                                 </div>
-                            </div>
-                        </template>
-                        <li><a class="btn btn-outline btn-primary drawer-button" x-on:click="post = null; site = {'domain': ''}">New site</a></li>
-                    </ul>
-                </div>
-            </div>
+                            </template> <!-- postManager -->
+                        </div>
+                    </div>
+                </template> <!-- /site -->
+            </div> <!-- /main -->
         </div>
     </body>
 </html>
