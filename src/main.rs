@@ -23,9 +23,14 @@ mod admin {
 
 mod content;
 mod nostr;
+mod resource;
+mod sass;
 mod site;
+mod template;
+mod theme;
 
 use site::Site;
+use theme::Theme;
 
 #[derive(Parser)]
 struct Cli {
@@ -50,6 +55,7 @@ struct Cli {
 
 #[derive(Clone)]
 struct State {
+    themes: Arc<RwLock<HashMap<String, Theme>>>,
     sites: Arc<RwLock<HashMap<String, Site>>>,
 }
 
@@ -85,12 +91,12 @@ fn build_raw_response(content: Vec<u8>, mime: mime::Mime) -> Response {
 
 fn render_and_build_response(site: &Site, resource_path: String) -> Response {
     let resources = site.resources.read().unwrap();
-    let event_ref = resources.get(&resource_path).unwrap();
+    let resource = resources.get(&resource_path).unwrap();
 
     Response::builder(StatusCode::Ok)
         .content_type(mime::HTML)
         .header("Access-Control-Allow-Origin", "*")
-        .body(&*event_ref.render(site))
+        .body(&*resource.render(site))
         .build()
 }
 
@@ -104,8 +110,8 @@ async fn handle_websocket(
             nostr::Message::Event(cmd) => {
                 {
                     if let Some(site) = get_site(&request) {
-                        if let Some(site_pubkey) = site.config.get("pubkey") {
-                            if cmd.event.pubkey != site_pubkey.as_str().unwrap() {
+                        if let Some(site_pubkey) = site.config.pubkey {
+                            if cmd.event.pubkey != site_pubkey {
                                 log::info!(
                                     "Ignoring event for unknown pubkey: {}.",
                                     cmd.event.pubkey
@@ -291,7 +297,7 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
     }
 
     if let Some(site) = get_site(&request) {
-        if let Some((mime, response)) = site::render_standard_resource(path, &site) {
+        if let Some((mime, response)) = resource::render_standard_resource(path, &site) {
             return Ok(Response::builder(StatusCode::Ok)
                 .content_type(mime)
                 .header("Access-Control-Allow-Origin", "*")
@@ -299,18 +305,29 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
                 .build());
         }
 
-        let existing_posts: Vec<String>;
+        let site_resources: Vec<String>;
         {
-            let posts = site.resources.read().unwrap();
-            existing_posts = posts.keys().cloned().collect();
+            let resources = site.resources.read().unwrap();
+            site_resources = resources.keys().cloned().collect();
         }
+
+        let themes = request.state().themes.read().unwrap();
+        let theme = themes.get(&site.config.theme.clone().unwrap()).unwrap();
+
         let mut resource_path = format!("/{}", &path);
-        if existing_posts.contains(&resource_path) {
-            Ok(render_and_build_response(&site, resource_path))
+        if site_resources.contains(&resource_path) {
+            return Ok(render_and_build_response(&site, resource_path));
         } else {
+            let theme_resources = theme.resources.read().unwrap();
+            if theme_resources.contains_key(&resource_path) {
+                let content = theme_resources.get(&resource_path).unwrap();
+                let guess = mime_guess::from_path(resource_path);
+                let mime = mime::Mime::from_str(guess.first().unwrap().essence_str()).unwrap();
+                return Ok(build_raw_response(content.as_bytes().to_vec(), mime));
+            }
             resource_path = format!("{}/index", &resource_path);
-            if existing_posts.contains(&resource_path) {
-                Ok(render_and_build_response(&site, resource_path))
+            if site_resources.contains(&resource_path) {
+                return Ok(render_and_build_response(&site, resource_path));
             } else {
                 resource_path = format!("{}/{}", site.path, path);
                 for part in resource_path.split('/').collect::<Vec<_>>() {
@@ -324,7 +341,7 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
                     let raw_content = fs::read(&resource_path).unwrap();
                     let guess = mime_guess::from_path(resource_path);
                     let mime = mime::Mime::from_str(guess.first().unwrap().essence_str()).unwrap();
-                    Ok(build_raw_response(raw_content, mime))
+                    return Ok(build_raw_response(raw_content, mime));
                 } else {
                     // look for an uploaded file
                     if let Some(sha256) = sha256 {
@@ -340,12 +357,12 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
                             let metadata: FileMetadata =
                                 serde_json::from_reader(metadata_reader).unwrap();
                             let mime = mime::Mime::from_str(&metadata.content_type).unwrap();
-                            Ok(build_raw_response(raw_content, mime))
+                            return Ok(build_raw_response(raw_content, mime));
                         } else {
-                            Ok(Response::builder(StatusCode::NotFound).build())
+                            return Ok(Response::builder(StatusCode::NotFound).build());
                         }
                     } else {
-                        Ok(Response::builder(StatusCode::NotFound).build())
+                        return Ok(Response::builder(StatusCode::NotFound).build());
                     }
                 }
             }
@@ -418,8 +435,7 @@ async fn handle_get_sites(request: Request<State>) -> tide::Result<Response> {
     let sites = all_sites
         .iter()
         .filter_map(|s| {
-            let pk = s.1.config.get("pubkey")?;
-            if pk.as_str().unwrap() == key {
+            if s.1.config.pubkey.clone().unwrap() == key {
                 Some(HashMap::from([("domain", s.0)]))
             } else {
                 None
@@ -437,8 +453,8 @@ async fn handle_list_request(request: Request<State>) -> tide::Result<Response> 
     let site_path = {
         if let Some(site) = get_site(&request) {
             let pubkey = request.param("pubkey").unwrap();
-            if let Some(site_pubkey) = site.config.get("pubkey") {
-                if site_pubkey.as_str().unwrap() != pubkey {
+            if let Some(site_pubkey) = site.config.pubkey {
+                if site_pubkey != pubkey {
                     log::info!("Invalid key.");
                     return Ok(Response::builder(StatusCode::NotFound)
                         .header("Access-Control-Allow-Origin", "*")
@@ -494,8 +510,8 @@ async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Resp
     let site_path = {
         if let Some(site) = get_site(&request) {
             if let Some(pubkey) = blossom_auth(&request, "upload") {
-                if let Some(site_pubkey) = site.config.get("pubkey") {
-                    if site_pubkey.as_str().unwrap() != pubkey {
+                if let Some(site_pubkey) = site.config.pubkey {
+                    if site_pubkey != pubkey {
                         log::info!("Non-matching key.");
                         return Ok(Response::builder(StatusCode::Unauthorized)
                             .header("Access-Control-Allow-Origin", "*")
@@ -559,8 +575,8 @@ async fn handle_delete_request(request: Request<State>) -> tide::Result<Response
     let site_path = {
         if let Some(site) = get_site(&request) {
             if let Some(pubkey) = blossom_auth(&request, "delete") {
-                if let Some(site_pubkey) = site.config.get("pubkey") {
-                    if site_pubkey.as_str().unwrap() != pubkey {
+                if let Some(site_pubkey) = site.config.pubkey {
+                    if site_pubkey != pubkey {
                         log::info!("Non-matching key.");
                         return Ok(Response::builder(StatusCode::Unauthorized)
                             .header("Access-Control-Allow-Origin", "*")
@@ -607,6 +623,13 @@ async fn main() -> Result<(), std::io::Error> {
 
     femme::with_level(log::LevelFilter::Info);
 
+    let themes = theme::load_themes();
+
+    if themes.len() == 0 {
+        println!("No themes found. Exiting!");
+        return Ok(());
+    }
+
     let sites;
 
     let existing_sites = site::load_sites();
@@ -640,6 +663,7 @@ async fn main() -> Result<(), std::io::Error> {
     let site_count = sites.len();
 
     let mut app = tide::with_state(State {
+        themes: Arc::new(RwLock::new(themes)),
         sites: Arc::new(RwLock::new(sites)),
     });
 

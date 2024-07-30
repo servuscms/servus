@@ -10,6 +10,8 @@ bitcoin_hashes = { version = "0.12", features = ["serde"] }
 chrono = { version = "0", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 femme = "2"
+globset = "0.4"
+grass = {version = "0.13", default-features = false, features = ["random"]}
 http-types = "2"
 lazy_static = "1.4"
 markdown = "1.0.0-alpha.3"

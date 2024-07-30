@@ -85,7 +85,7 @@ Things are definitely going to improve, but I am too busy building a solid found
 
 ## Themes
 
-Not only there is no stable UI, but there are no usable themes included.
+Servus currently supports Zola's [Hyde](https://github.com/getzola/hyde/) theme.
 
 ## Building
 
@@ -136,30 +136,20 @@ Each of these "sites" has the following structure:
 │   └── posts
 │       ├── yyyy-mm-dd-post1.md
 │       └── [...]
-├── _layouts
-│   ├── includes
-│   │   └── [...]
-│   ├── base.html
-│   ├── note.html
-│   ├── page.html
-│   └── post.html
 ├── favicon.ico
 └── [...]
 ```
 
 Files and directories starting with "." are ignored.
 
-Files and directories starting with "_" have special meaning: `_config.toml`, `_content`, `_layouts`.
+Files and directories starting with "_" have special meaning: `_config.toml`, `_content`.
 
 Anything else will be directly served to the clients requesting it.
 
 ## _config.toml
 
-Every site needs a config file which has one section named `site`.
-
-All properties present under `[site]` are passed directly to the templates: `title` becomes `site.title`, `url` becomes `site.url`, etc.
-
-`post_permalink`, if specified, is used to generate permalinks for posts by replacing `:slug` with the actual *slug* of the post. If not specified, it defaults to `/posts/:slug`.
+Required: `base_url`, `theme`.
+Optional: `pubkey`, `title`.
 
 `pubkey`, if specified, is used to enable posting using the Nostr protocol. Only events from the specified pubkey will be accepted, after validating the signature.
 
@@ -173,14 +163,13 @@ The following variables are passed to the templates:
 
 * `data` - any data loaded from YAML files in `_content/data/`
 * `posts` - a list of all the posts
-* `resource` - the current resource (post / page / note) being rendered
+* `page` - the current resource (post / page / note) being rendered
 * `servus.version` - the version of Servus currently running
-* `site` - the `[site]` section in `_config.toml`
+* `config` - the values from `_config.toml`
 
 ### Resource variables
 
-* `resource.date` - the date associated with this resource (post / note)
-* `resource.url` - the URL of this resource
+* `page.date` - the date associated with this resource (post / note)
 
 ## Posting
 

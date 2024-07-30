@@ -1,9 +1,8 @@
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use http_types::mime;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    env, fs,
+    fs,
     fs::File,
     io::BufReader,
     path::PathBuf,
@@ -13,36 +12,79 @@ use std::{
 use tide::log;
 use walkdir::WalkDir;
 
-use crate::{content, nostr};
+const DEFAULT_THEME: &str = "hyde";
 
-mod default_theme {
-    include!(concat!(env!("OUT_DIR"), "/default_theme.rs"));
-}
+use crate::{
+    content, nostr,
+    resource::{ContentSource, Resource, ResourceKind},
+    template,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
-struct ServusMetadata {
-    version: String,
-}
-
-#[derive(Clone, Serialize)]
-struct PageTemplateContext<TagType> {
-    url: String,
-    slug: String,
-    summary: Option<String>,
-    inner_html: String,
-    date: Option<NaiveDateTime>,
-    #[serde(flatten)]
-    tags: HashMap<String, TagType>,
+pub struct ServusMetadata {
+    pub version: String,
 }
 
 #[derive(Clone)]
 pub struct Site {
     pub path: String,
-    pub config: toml::Value,
+    pub config: SiteConfig,
     pub data: Arc<RwLock<HashMap<String, serde_yaml::Value>>>,
     pub events: Arc<RwLock<HashMap<String, EventRef>>>,
     pub resources: Arc<RwLock<HashMap<String, Resource>>>,
-    pub tera: Arc<RwLock<tera::Tera>>,
+    pub tera: Arc<RwLock<tera::Tera>>, // TODO: try to move this to Theme
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SiteConfig {
+    pub base_url: String,
+    pub pubkey: Option<String>,
+
+    pub theme: Option<String>,
+    pub title: Option<String>,
+
+    pub extra: HashMap<String, toml::Value>,
+}
+
+impl SiteConfig {
+    // https://github.com/getzola/zola/blob/master/components/config/src/config/mod.rs
+
+    /// Makes a url, taking into account that the base url might have a trailing slash
+    pub fn make_permalink(&self, path: &str) -> String {
+        let trailing_bit = if path.ends_with('/') || path.ends_with("atom.xml") || path.is_empty() {
+            ""
+        } else {
+            "/"
+        };
+
+        // Index section with a base url that has a trailing slash
+        if self.base_url.ends_with('/') && path == "/" {
+            self.base_url.to_string()
+        } else if path == "/" {
+            // index section with a base url that doesn't have a trailing slash
+            format!("{}/", self.base_url)
+        } else if self.base_url.ends_with('/') && path.starts_with('/') {
+            format!("{}{}{}", self.base_url, &path[1..], trailing_bit)
+        } else if self.base_url.ends_with('/') || path.starts_with('/') {
+            format!("{}{}{}", self.base_url, path, trailing_bit)
+        } else {
+            format!("{}/{}{}", self.base_url, path, trailing_bit)
+        }
+    }
+}
+
+fn load_templates(site_config: &SiteConfig) -> tera::Tera {
+    println!("Loading templates...");
+
+    let theme_path = format!("./themes/{}", site_config.theme.as_ref().unwrap());
+
+    let mut tera = tera::Tera::new(&format!("{}/templates/**/*", theme_path)).unwrap();
+    tera.autoescape_on(vec![]);
+    tera.register_function("get_url", template::GetUrl::new(site_config.clone()));
+
+    println!("Loaded {} templates!", tera.get_template_names().count());
+
+    tera
 }
 
 impl Site {
@@ -169,7 +211,7 @@ impl Site {
                     slug,
                     content_source,
                 };
-                if let Some(url) = resource.get_resource_url(&self.config) {
+                if let Some(url) = resource.get_resource_url() {
                     println!("Resource: url={}.", &url);
                     let mut resources = self.resources.write().unwrap();
                     resources.insert(url, resource);
@@ -248,7 +290,7 @@ impl Site {
                 content_source: ContentSource::Event(event.id.to_owned()),
             };
 
-            if let Some(url) = resource.get_resource_url(&self.config) {
+            if let Some(url) = resource.get_resource_url() {
                 // but not all posts have an URL (drafts don't)
                 let mut resources = self.resources.write().unwrap();
                 resources.insert(url.to_owned(), resource);
@@ -360,13 +402,6 @@ impl Site {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Serialize)]
-pub enum ResourceKind {
-    Post,
-    Page,
-    Note,
-}
-
 #[derive(Clone, Serialize)]
 pub struct EventRef {
     pub id: String,
@@ -374,23 +409,6 @@ pub struct EventRef {
     pub d_tag: Option<String>,
 
     pub filename: String,
-}
-
-#[derive(Clone, Serialize)]
-pub enum ContentSource {
-    Event(String),
-    File(String),
-}
-
-#[derive(Clone, Serialize)]
-pub struct Resource {
-    pub kind: ResourceKind,
-    pub slug: String,
-
-    pub title: Option<String>,
-    pub date: Option<NaiveDateTime>,
-
-    pub content_source: ContentSource,
 }
 
 impl EventRef {
@@ -402,265 +420,11 @@ impl EventRef {
     }
 }
 
-impl Resource {
-    pub fn read(&self, site: &Site) -> Option<(HashMap<String, serde_yaml::Value>, String)> {
-        let filename = match self.content_source.clone() {
-            ContentSource::File(f) => f,
-            ContentSource::Event(e_id) => {
-                let events = site.events.read().unwrap();
-                let event_ref = events.get(&e_id).unwrap();
-                event_ref.filename.to_owned()
-            }
-        };
-        let file = File::open(filename).unwrap();
-        let mut reader = BufReader::new(file);
-
-        content::read(&mut reader)
-    }
-
-    pub fn get_resource_url(&self, site_config: &toml::Value) -> Option<String> {
-        // TODO: extract all URL patterns from config!
-        match self.kind {
-            ResourceKind::Post => {
-                return Some(site_config.get("post_permalink").map_or_else(
-                    || format!("/posts/{}", &self.slug),
-                    |p| p.as_str().unwrap().replace(":slug", &self.slug),
-                ));
-            }
-            ResourceKind::Page => Some(format!("/{}", &self.clone().slug)),
-            ResourceKind::Note => Some(format!("/notes/{}", &self.clone().slug)),
-        }
-    }
-
-    pub fn render(&self, site: &Site) -> Vec<u8> {
-        let (front_matter, content) = self.read(site).unwrap();
-
-        match self.kind {
-            ResourceKind::Page | ResourceKind::Post => {
-                let mut tera = site.tera.write().unwrap();
-                let mut extra_context = tera::Context::new();
-
-                // TODO: how to refactor this?
-                // Basically the if/else branches are the same,
-                // but constructing PageTemplateContext with different type parameters.
-                if let Some(event) = nostr::parse_event(&front_matter, &content) {
-                    extra_context.insert(
-                        "resource",
-                        &PageTemplateContext {
-                            slug: self.slug.to_owned(),
-                            date: self.date,
-                            tags: event.get_tags_hash(),
-                            inner_html: md_to_html(&content),
-                            summary: event.get_long_form_summary(),
-                            url: self.get_resource_url(&site.config).unwrap(),
-                        },
-                    );
-                } else {
-                    extra_context.insert(
-                        "resource",
-                        &PageTemplateContext {
-                            slug: self.slug.to_owned(),
-                            date: self.date,
-                            tags: front_matter,
-                            inner_html: md_to_html(&content),
-                            summary: None,
-                            url: self.get_resource_url(&site.config).unwrap(),
-                        },
-                    );
-                }
-                extra_context.insert("data", &site.data);
-
-                let resources = site.resources.read().unwrap();
-                let mut posts_list = resources
-                    .values()
-                    .collect::<Vec<&Resource>>()
-                    .into_iter()
-                    .filter(|r| r.kind == ResourceKind::Post)
-                    .collect::<Vec<&Resource>>();
-                posts_list.sort_by(|a, b| b.date.cmp(&a.date));
-                extra_context.insert("posts", &posts_list);
-
-                let rendered_text = render(
-                    &content,
-                    &site.config,
-                    Some(extra_context.clone()),
-                    &mut tera,
-                );
-                let html = md_to_html(&rendered_text);
-                let layout = match self.kind {
-                    ResourceKind::Post => "post.html".to_string(),
-                    _ => "page.html".to_string(),
-                };
-
-                render_template(&layout, &mut tera, &html, &site.config, extra_context)
-                    .as_bytes()
-                    .to_vec()
-            }
-            ResourceKind::Note => {
-                let mut tera = site.tera.write().unwrap();
-                let mut extra_context = tera::Context::new();
-                let date = self.date;
-                extra_context.insert(
-                    "resource",
-                    &PageTemplateContext {
-                        slug: self.slug.to_owned(),
-                        date,
-                        tags: front_matter,
-                        inner_html: content.to_owned(),
-                        summary: None,
-                        url: self.get_resource_url(&site.config).unwrap(),
-                    },
-                );
-                render_template(
-                    "note.html",
-                    &mut tera,
-                    &content,
-                    &site.config,
-                    extra_context,
-                )
-                .as_bytes()
-                .to_vec()
-            }
-        }
-    }
-}
-
-fn render_template(
-    template: &str,
-    tera: &mut tera::Tera,
-    content: &str,
-    site_config: &toml::Value,
-    extra_context: tera::Context,
-) -> String {
-    let mut context = tera::Context::new();
-    context.insert("site", &site_config);
-    context.insert(
-        "servus",
-        &ServusMetadata {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        },
-    );
-    context.insert("content", &content);
-    context.extend(extra_context);
-
-    tera.render(template, &context).unwrap()
-}
-
-fn md_to_html(md_content: &str) -> String {
-    let options = &markdown::Options {
-        compile: markdown::CompileOptions {
-            allow_dangerous_html: true,
-            ..markdown::CompileOptions::default()
-        },
-        ..markdown::Options::default()
-    };
-
-    markdown::to_html_with_options(md_content, options).unwrap()
-}
-
-fn render(
-    content: &str,
-    site: &toml::Value,
-    extra_context: Option<tera::Context>,
-    tera: &mut tera::Tera,
-) -> String {
-    let mut context = tera::Context::new();
-    context.insert("site", &site);
-    context.insert(
-        "servus",
-        &ServusMetadata {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        },
-    );
-    if let Some(c) = extra_context {
-        context.extend(c);
-    }
-
-    tera.render_str(content, &context).unwrap()
-}
-
-fn render_robots_txt(site_url: &str) -> (mime::Mime, String) {
-    let content = format!("User-agent: *\nSitemap: {}/sitemap.xml", site_url);
-    (mime::PLAIN, content)
-}
-
-fn render_nostr_json(site: &Site) -> (mime::Mime, String) {
-    let content = format!(
-        "{{ \"names\": {{ \"_\": \"{}\" }} }}",
-        site.config.get("pubkey").unwrap().as_str().unwrap()
-    );
-    (mime::JSON, content)
-}
-
-fn render_sitemap_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
-    let mut response: String = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n".to_owned();
-    let resources = site.resources.read().unwrap();
-    response.push_str("<urlset xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd\" xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
-    for url in resources.keys() {
-        let mut url = url.trim_end_matches("/index").to_owned();
-        if url == site_url && !url.ends_with('/') {
-            url.push('/');
-        }
-        response.push_str(&format!("    <url><loc>{}</loc></url>\n", url));
-    }
-    response.push_str("</urlset>");
-
-    (mime::XML, response)
-}
-
-fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
-    let site_title = match site.config.get("title") {
-        Some(t) => t.as_str().unwrap(),
-        _ => "",
-    };
-    let mut response: String = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n".to_owned();
-    response.push_str("<feed xmlns=\"http://www.w3.org/2005/Atom\">\n");
-    response.push_str(&format!("<title>{}</title>\n", site_title));
-    response.push_str(&format!(
-        "<link href=\"{}/atom.xml\" rel=\"self\"/>\n",
-        site_url
-    ));
-    response.push_str(&format!("<link href=\"{}/\"/>\n", site_url));
-    response.push_str(&format!("<id>{}</id>\n", site_url));
-    let resources = site.resources.read().unwrap();
-    for (url, resource) in &*resources {
-        if resource.date.is_some() {
-            if let Some((_, content)) = resource.read(site) {
-                response.push_str(
-                    &format!(
-                        "<entry>
-<title>{}</title>
-<link href=\"{}\"/>
-<updated>{}</updated>
-<id>{}/{}</id>
-<content type=\"xhtml\"><div xmlns=\"http://www.w3.org/1999/xhtml\">{}</div></content>
-</entry>
-",
-                        resource.title.clone().unwrap_or("".to_string()),
-                        &url,
-                        &resource.date.unwrap(),
-                        site_url,
-                        resource.slug.clone(),
-                        &md_to_html(&content).to_owned()
-                    )
-                    .to_owned(),
-                );
-            }
-        }
-    }
-    response.push_str("</feed>");
-
-    (mime::XML, response)
-}
-
-pub fn render_standard_resource(resource_name: &str, site: &Site) -> Option<(mime::Mime, String)> {
-    let site_url = site.config.get("url")?.as_str().unwrap();
-    match resource_name {
-        "robots.txt" => Some(render_robots_txt(site_url)),
-        ".well-known/nostr.json" => Some(render_nostr_json(site)),
-        "sitemap.xml" => Some(render_sitemap_xml(site_url, site)),
-        "atom.xml" => Some(render_atom_xml(site_url, site)),
-        _ => None,
+pub fn load_config(config_path: &str) -> Option<SiteConfig> {
+    if let Ok(content) = fs::read_to_string(config_path) {
+        Some(toml::from_str(&content).unwrap())
+    } else {
+        None
     }
 }
 
@@ -673,35 +437,26 @@ pub fn load_sites() -> HashMap<String, Site> {
     let mut sites = HashMap::new();
     for path in &paths {
         println!("Found site: {}", path.file_name().to_str().unwrap());
-        let config_content =
-            match fs::read_to_string(&format!("{}/_config.toml", path.path().display())) {
-                Ok(content) => content,
-                _ => {
-                    println!(
-                        "No site config for site: {}. Skipping!",
-                        path.file_name().to_str().unwrap()
-                    );
-                    continue;
-                }
-            };
 
-        println!("Loading layouts...");
+        let site_path = path.path().display().to_string();
 
-        let mut tera = tera::Tera::new(&format!(
-            "{}/_layouts/**/*",
-            fs::canonicalize(path.path()).unwrap().display()
-        ))
-        .unwrap();
-        tera.autoescape_on(vec![]);
+        let config = load_config(&format!("{}/_config.toml", site_path));
+        if config.is_none() {
+            println!("No site config for site: {}. Skipping!", site_path);
+        }
 
-        println!("Loaded {} templates!", tera.get_template_names().count());
+        let mut config = config.unwrap();
 
-        let config: HashMap<String, toml::Value> = toml::from_str(&config_content).unwrap();
-        let site_config = config.get("site").unwrap();
+        let theme_path = format!("./themes/{}", config.theme.as_ref().unwrap());
+        let theme_config = load_config(&&format!("{}/config.toml", theme_path));
+
+        config.extra = theme_config.unwrap().extra; // TODO: merge rather than overwrite!
+
+        let tera = load_templates(&config);
 
         let site = Site {
-            config: site_config.clone(),
-            path: path.path().display().to_string(),
+            config,
+            path: site_path,
             data: Arc::new(RwLock::new(HashMap::new())),
             events: Arc::new(RwLock::new(HashMap::new())),
             resources: Arc::new(RwLock::new(HashMap::new())),
@@ -724,30 +479,28 @@ pub fn create_site(domain: &str, admin_pubkey: Option<String>) -> Site {
     let path = format!("./sites/{}", domain);
     fs::create_dir_all(&path).unwrap();
 
-    default_theme::generate(&format!("./sites/{}/", domain));
-
-    let mut tera = tera::Tera::new(&format!("{}/_layouts/**/*", path)).unwrap();
-    tera.autoescape_on(vec![]);
-
     let config_content = format!(
-        "[site]\npubkey = \"{}\"\nurl = \"https://{}\"\ntitle = \"{}\"\ntagline = \"{}\"",
+        "pubkey = \"{}\"\nbase_url = \"https://{}\"\ntitle = \"{}\"\ntheme = \"{}\"\n[extra]\n",
         admin_pubkey.unwrap_or("".to_string()),
         domain,
-        "Untitled site", // TODO: get from the request?
-        "Undefined tagline"
+        "",
+        DEFAULT_THEME
     );
     fs::write(format!("./sites/{}/_config.toml", domain), &config_content).unwrap();
 
-    let site_config = toml::from_str::<HashMap<String, toml::Value>>(&config_content).unwrap();
+    let config = load_config(&format!("{}/_config.toml", path)).unwrap();
+
+    let tera = load_templates(&config);
 
     let site = Site {
-        config: site_config.get("site").unwrap().clone(),
+        config,
         path,
         data: Arc::new(RwLock::new(HashMap::new())),
         events: Arc::new(RwLock::new(HashMap::new())),
         resources: Arc::new(RwLock::new(HashMap::new())),
         tera: Arc::new(RwLock::new(tera)),
     };
+
     site.load_resources();
 
     site
