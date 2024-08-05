@@ -30,16 +30,11 @@ pub fn read(reader: &mut dyn BufRead) -> Option<(HashMap<String, YamlValue>, Str
         serde_yaml::from_str(&yaml_front_matter).unwrap();
 
     let mut content = String::new();
-    let mut found_newline = false;
     loop {
         line.clear();
-        reader.read_line(&mut line).unwrap();
-        let is_empty_line = line.trim_end_matches('\n').is_empty();
-        if found_newline && is_empty_line {
+        let bytes = reader.read_line(&mut line).unwrap();
+        if bytes == 0 {
             break;
-        }
-        if is_empty_line {
-            found_newline = true;
         }
         content.push_str(&line);
     }
@@ -55,17 +50,99 @@ mod tests {
 
     #[test]
     fn test_read() {
-        let content = "---\n---\nqwerty";
+        let content = r#"
+---
+---
+qwerty"#;
         let (front_matter, content) = read(&mut BufReader::new(content.as_bytes())).unwrap();
-
         assert_eq!(front_matter.len(), 0);
         assert_eq!(content, "qwerty");
 
-        let content = "---\nasdf: ghjk\n---\nqwerty";
+        let content = r#"
+---
+asdf: ghjk
+---
+qwerty"#;
         let (front_matter, content) = read(&mut BufReader::new(content.as_bytes())).unwrap();
-
         assert_eq!(front_matter.len(), 1);
         assert_eq!(front_matter.get("asdf").unwrap().as_str().unwrap(), "ghjk");
         assert_eq!(content, "qwerty");
+
+        let content = r#"
+---
+asdf: ghjk
+---
+qwerty
+
+
+a
+"#;
+        let (front_matter, content) = read(&mut BufReader::new(content.as_bytes())).unwrap();
+        assert_eq!(front_matter.len(), 1);
+        assert_eq!(front_matter.get("asdf").unwrap().as_str().unwrap(), "ghjk");
+        assert_eq!(content, "qwerty\n\n\na\n");
+
+        let content = r#"
+---
+title: Matter --- Revenge of the Unquoted Strings
+---
+Some content."#;
+        let (front_matter, content) = read(&mut BufReader::new(content.as_bytes())).unwrap();
+        assert_eq!(front_matter.len(), 1);
+        assert_eq!(
+            front_matter.get("title").unwrap().as_str().unwrap(),
+            "Matter --- Revenge of the Unquoted Strings"
+        );
+        assert_eq!(content, "Some content.");
+
+        let content = r#"
+---
+availability: public
+when:
+    start: 1471/3/28 MTR 4::22
+    duration: 0::30
+date: 2012-02-18
+title: Rutejìmo
+---
+Text"#;
+        let (front_matter, content) = read(&mut BufReader::new(content.as_bytes())).unwrap();
+        assert_eq!(front_matter.len(), 4);
+        assert_eq!(
+            front_matter.get("availability").unwrap().as_str().unwrap(),
+            "public"
+        );
+        assert_eq!(
+            front_matter
+                .get("when")
+                .unwrap()
+                .as_mapping()
+                .unwrap()
+                .get("start")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "1471/3/28 MTR 4::22"
+        );
+        assert_eq!(
+            front_matter
+                .get("when")
+                .unwrap()
+                .as_mapping()
+                .unwrap()
+                .get("duration")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "0::30"
+        );
+        assert_eq!(
+            front_matter.get("date").unwrap().as_str().unwrap(),
+            "2012-02-18"
+        );
+        assert_eq!(
+            front_matter.get("title").unwrap().as_str().unwrap(),
+            "Rutejìmo"
+        );
+        assert_eq!(content, "Text");
     }
 }

@@ -7,9 +7,8 @@ use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use std::{
     collections::HashMap,
-    ffi::OsStr,
     fs,
-    fs::{File, OpenOptions},
+    fs::File,
     io::Write,
     path::Path,
     str::FromStr,
@@ -209,24 +208,11 @@ impl Event {
         serde_json::to_string(&c).unwrap()
     }
 
-    pub fn write(&self, filename: &str) -> std::io::Result<u64> {
+    pub fn write(&self, filename: &str) -> std::io::Result<()> {
         let path = Path::new(&filename);
         fs::create_dir_all(path.ancestors().nth(1).unwrap()).unwrap();
-        let extension = path.extension().and_then(OsStr::to_str).unwrap();
         let mut file;
-        let index;
-        if extension == "mmd" {
-            index = path.metadata()?.len();
-            file = OpenOptions::new().append(true).open(path).unwrap();
-            if index != 0 {
-                writeln!(file)?;
-                writeln!(file)?;
-                writeln!(file)?;
-            }
-        } else {
-            index = 0_u64;
-            file = File::create(path).unwrap();
-        }
+        file = File::create(path).unwrap();
 
         writeln!(file, "---")?;
         writeln!(file, "id: {}", self.id)?;
@@ -247,7 +233,7 @@ impl Event {
         writeln!(file, "---")?;
         write!(file, "{}", self.content)?;
 
-        Ok(index)
+        Ok(())
     }
 }
 

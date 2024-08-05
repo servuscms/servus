@@ -44,7 +44,7 @@ pub struct Resource {
 }
 
 impl Resource {
-    pub fn read(&self, site: &Site) -> Option<(HashMap<String, serde_yaml::Value>, String)> {
+    fn read(&self, site: &Site) -> Option<(HashMap<String, serde_yaml::Value>, String)> {
         let filename = match self.content_source.clone() {
             ContentSource::File(f) => f,
             ContentSource::Event(e_id) => {
