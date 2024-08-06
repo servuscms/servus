@@ -236,15 +236,10 @@ pub fn render_standard_resource(resource_name: &str, site: &Site) -> Option<(mim
 }
 
 fn md_to_html(md_content: &str) -> String {
-    let options = &markdown::Options {
-        compile: markdown::CompileOptions {
-            allow_dangerous_html: true,
-            ..markdown::CompileOptions::default()
-        },
-        ..markdown::Options::default()
-    };
-
-    markdown::to_html_with_options(md_content, options).unwrap()
+    let parser = pulldown_cmark::Parser::new(md_content);
+    let mut html_output = String::new();
+    pulldown_cmark::html::push_html(&mut html_output, parser);
+    html_output
 }
 
 fn render(content: &str, extra_context: Option<tera::Context>, tera: &mut tera::Tera) -> String {

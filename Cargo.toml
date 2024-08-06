@@ -14,9 +14,9 @@ globset = "0.4"
 grass = {version = "0.13", default-features = false, features = ["random"]}
 http-types = "2"
 lazy_static = "1.4"
-markdown = "1.0.0-alpha.3"
 mime_guess = "2.0.4"
 phf = { version = "0.11.2", features = ["macros"] }
+pulldown-cmark = "0.11.0"
 regex = "1"
 secp256k1 = { version = "0.27", features = ["serde", "bitcoin_hashes"] }
 serde = "1"
