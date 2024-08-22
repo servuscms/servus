@@ -28,6 +28,7 @@ mod sass;
 mod site;
 mod template;
 mod theme;
+mod utils;
 
 use site::Site;
 use theme::Theme;

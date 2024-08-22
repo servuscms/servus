@@ -18,6 +18,7 @@ use crate::{
     content, nostr,
     resource::{ContentSource, Resource, ResourceKind},
     template,
+    utils::merge,
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -69,6 +70,16 @@ impl SiteConfig {
             format!("{}{}{}", self.base_url, path, trailing_bit)
         } else {
             format!("{}/{}{}", self.base_url, path, trailing_bit)
+        }
+    }
+
+    pub fn merge(&mut self, other: &SiteConfig) {
+        for (key, value) in &other.extra {
+            if !self.extra.contains_key(key) {
+                self.extra.insert(key.to_owned(), value.clone());
+                continue;
+            }
+            merge(self.extra.get_mut(key).unwrap(), value).unwrap();
         }
     }
 }
@@ -448,9 +459,9 @@ pub fn load_sites() -> HashMap<String, Site> {
         let mut config = config.unwrap();
 
         let theme_path = format!("./themes/{}", config.theme.as_ref().unwrap());
-        let theme_config = load_config(&&format!("{}/config.toml", theme_path));
+        let theme_config = load_config(&format!("{}/config.toml", theme_path)).unwrap();
 
-        config.extra = theme_config.unwrap().extra; // TODO: merge rather than overwrite!
+        config.merge(&theme_config);
 
         let tera = load_templates(&config);
 
@@ -488,7 +499,12 @@ pub fn create_site(domain: &str, admin_pubkey: Option<String>) -> Site {
     );
     fs::write(format!("./sites/{}/_config.toml", domain), &config_content).unwrap();
 
-    let config = load_config(&format!("{}/_config.toml", path)).unwrap();
+    let mut config = load_config(&format!("{}/_config.toml", path)).unwrap();
+
+    let theme_path = format!("./themes/{}", config.theme.as_ref().unwrap());
+    let theme_config = load_config(&format!("{}/config.toml", theme_path)).unwrap();
+
+    config.merge(&theme_config);
 
     let tera = load_templates(&config);
 
