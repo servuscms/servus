@@ -190,6 +190,11 @@ impl Site {
                 } else if relative_path.starts_with("pages") {
                     if front_matter.contains_key("title") {
                         kind = Some(ResourceKind::Page);
+                        date = front_matter.get("created_at").map(|c| {
+                            Utc.timestamp_opt(c.as_i64().unwrap(), 0)
+                                .unwrap()
+                                .naive_utc()
+                        });
                         slug = Some(file_stem.to_owned());
                         title = Some(
                             front_matter
@@ -214,7 +219,7 @@ impl Site {
 
                 content_source = ContentSource::File(filename);
             }
-            if let (Some(kind), Some(slug)) = (kind, slug) {
+            if let (Some(kind), Some(date), Some(slug)) = (kind, date, slug) {
                 let resource = Resource {
                     kind,
                     title,
@@ -296,7 +301,7 @@ impl Site {
             let resource = Resource {
                 kind,
                 title: event.get_tags_hash().get("title").cloned(),
-                date: event.get_long_form_published_at(),
+                date: event.get_date(),
                 slug,
                 content_source: ContentSource::Event(event.id.to_owned()),
             };

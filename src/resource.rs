@@ -27,7 +27,7 @@ struct PageTemplateContext<TagType> {
     slug: String,
     summary: Option<String>,
     content: String,
-    date: Option<NaiveDateTime>,
+    date: NaiveDateTime,
     #[serde(flatten)]
     tags: HashMap<String, TagType>,
 }
@@ -38,7 +38,7 @@ pub struct Resource {
     pub slug: String,
 
     pub title: Option<String>,
-    pub date: Option<NaiveDateTime>,
+    pub date: NaiveDateTime,
 
     pub content_source: ContentSource,
 }
@@ -196,11 +196,10 @@ fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
     response.push_str(&format!("<id>{}</id>\n", site_url));
     let resources = site.resources.read().unwrap();
     for (url, resource) in &*resources {
-        if resource.date.is_some() {
-            if let Some((_, content)) = resource.read(site) {
-                response.push_str(
-                    &format!(
-                        "<entry>
+        if let Some((_, content)) = resource.read(site) {
+            response.push_str(
+                &format!(
+                    "<entry>
 <title>{}</title>
 <link href=\"{}\"/>
 <updated>{}</updated>
@@ -208,16 +207,15 @@ fn render_atom_xml(site_url: &str, site: &Site) -> (mime::Mime, String) {
 <content type=\"xhtml\"><div xmlns=\"http://www.w3.org/1999/xhtml\">{}</div></content>
 </entry>
 ",
-                        resource.title.clone().unwrap_or("".to_string()),
-                        &url,
-                        &resource.date.unwrap(),
-                        site_url,
-                        resource.slug.clone(),
-                        &md_to_html(&content).to_owned()
-                    )
-                    .to_owned(),
-                );
-            }
+                    resource.title.clone().unwrap_or("".to_string()),
+                    &url,
+                    &resource.date,
+                    site_url,
+                    resource.slug.clone(),
+                    &md_to_html(&content).to_owned()
+                )
+                .to_owned(),
+            );
         }
     }
     response.push_str("</feed>");
