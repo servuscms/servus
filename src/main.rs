@@ -508,7 +508,7 @@ async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Resp
             .build());
     }
 
-    let site_path = {
+    let (site_path, site_base_url) = {
         if let Some(site) = get_site(&request) {
             if let Some(pubkey) = blossom_auth(&request, "upload") {
                 if let Some(site_pubkey) = site.config.pubkey {
@@ -531,7 +531,7 @@ async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Resp
                     .build());
             }
 
-            site.path.clone()
+            (site.path.clone(), site.config.base_url.clone())
         } else {
             return Ok(Response::builder(StatusCode::NotFound).build());
         }
@@ -549,12 +549,13 @@ async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Resp
             .body(json!({"message": "Unknown content type."}))
             .build());
     }
+    let mime = mime.unwrap();
 
     let metadata = FileMetadata {
         sha256: hash.to_owned(),
-        content_type: mime.unwrap().essence().to_owned(),
+        content_type: mime.essence().to_owned(),
         size: bytes.len(),
-        url: format!("https://{}/{}", request.host().unwrap(), hash),
+        url: format!("{}/{}.{}", site_base_url, hash, mime.subtype()),
     };
 
     fs::create_dir_all(format!("{}/_content/files", site_path)).unwrap();
