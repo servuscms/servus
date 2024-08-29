@@ -234,7 +234,9 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
         let resources = site.resources.read().unwrap();
         match resources.get("/index") {
             Some(..) => Ok(render_and_build_response(&site, "/index".to_owned())),
-            None => Ok(Response::new(StatusCode::NotFound)),
+            None => Ok(Response::builder(StatusCode::NotFound)
+                      .header("Access-Control-Allow-Origin", "*")
+                      .build())
         }
     } else {
         return Ok(Response::new(StatusCode::NotFound));
