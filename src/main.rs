@@ -50,6 +50,9 @@ struct Cli {
     #[clap(long)]
     ssl_acme_production: bool,
 
+    #[clap(short('b'), long)]
+    bind: Option<String>,
+
     #[clap(short('p'), long)]
     port: Option<u32>,
 }
@@ -684,7 +687,7 @@ async fn main() -> Result<(), std::io::Error> {
         .post(handle_post_site)
         .get(handle_get_sites);
 
-    let addr = "0.0.0.0";
+    let addr = args.bind.unwrap_or("0.0.0.0".to_owned());
 
     if args.ssl_cert.is_some() && args.ssl_key.is_some() {
         let port = args.port.unwrap_or(443);
