@@ -1,5 +1,5 @@
 use bitcoin_hashes::{sha256, Hash};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeDelta, TimeZone, Utc};
 use lazy_static::lazy_static;
 use secp256k1::{schnorr, Secp256k1, VerifyOnly, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
@@ -126,28 +126,34 @@ impl Event {
 
     pub fn get_nip98_pubkey(&self, url: &str, method: &str) -> Option<String> {
         if self.validate_sig().is_err() {
+            log::info!("NIP-98: Invalid signature.");
             return None;
         }
 
         if self.kind != EVENT_KIND_AUTH || !self.content.is_empty() {
+            log::info!("NIP-98: Invalid event.");
             return None;
         }
 
-        let now = SystemTime::now();
-        let one_min = Duration::from_secs(60);
-        let created_at = UNIX_EPOCH + Duration::from_secs(self.created_at as u64);
-        if created_at < now && created_at.elapsed().unwrap() > one_min {
+        let now = chrono::offset::Utc::now();
+        let five_mins = TimeDelta::minutes(5);
+        let created_at = DateTime::from_timestamp(self.created_at as i64, 0).unwrap();
+        if created_at < now && now - created_at > five_mins {
+            log::info!("NIP-98: Event too old.");
             return None;
         }
-        if created_at > now && created_at > now.checked_add(one_min).unwrap() {
+        if created_at > now && created_at - now > five_mins {
+            log::info!("NIP-98: Event too new.");
             return None;
         }
 
         let tags = self.get_tags_hash();
         if tags.get("u")? != url {
+            log::info!("NIP-98: Invalid 'u' tag.");
             return None;
         }
         if tags.get("method")? != method {
+            log::info!("NIP-98: Invalid method.");
             return None;
         }
 
