@@ -69,7 +69,7 @@
                 if (API_BASE_URL.startsWith("//localhost:")) {
                     return `ws:${API_BASE_URL}`;
                 } else {
-                    return `${WS_PROTOCOL}//${site.domain}`;
+                    return `${WS_PROTOCOL}//${siteDomain}`;
                 }
             }
 
