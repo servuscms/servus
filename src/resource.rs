@@ -1,7 +1,7 @@
 use chrono::NaiveDateTime;
 use http_types::mime;
 use serde::Serialize;
-use std::{collections::HashMap, env, fs::File, io::BufReader, str};
+use std::{collections::HashMap, env, fs::File, io::BufReader, path::PathBuf, str};
 
 use crate::{
     content, nostr,
@@ -22,14 +22,68 @@ pub enum ContentSource {
 }
 
 #[derive(Clone, Serialize)]
-struct PageTemplateContext<TagType> {
+struct Page {
+    title: String,
+    permalink: String,
     url: String,
     slug: String,
+    path: Option<String>,
+    description: Option<String>,
     summary: Option<String>,
     content: String,
     date: NaiveDateTime,
-    #[serde(flatten)]
-    tags: HashMap<String, TagType>,
+    translations: Vec<PathBuf>,
+    lang: Option<String>,
+    reading_time: Option<String>,
+}
+
+impl Page {
+    fn from_resource(resource: &Resource, site: &Site) -> Self {
+        let (front_matter, content) = resource.read(site).unwrap();
+        let title;
+        let summary;
+        if let Some(event) = nostr::parse_event(&front_matter, &content) {
+            title = event.get_tag("title").unwrap().to_owned();
+            summary = event.get_long_form_summary();
+        } else {
+            title = front_matter
+                .get("title")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned();
+            summary = None;
+        }
+        Self {
+            title,
+            permalink: site
+                .config
+                .make_permalink(&resource.get_resource_url().unwrap()),
+            url: resource.get_resource_url().unwrap(),
+            slug: resource.slug.to_owned(),
+            path: None,        // TODO
+            description: None, // TODO
+            summary,
+            content: md_to_html(&content),
+            date: resource.date,
+            translations: vec![], // TODO
+            lang: None,           // TODO
+            reading_time: None,   // TODO
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct Section {
+    pages: Vec<Page>,
+    title: Option<String>,
+    content: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct Paginator {
+    pages: Vec<Page>,
 }
 
 #[derive(Clone, Serialize)]
@@ -69,7 +123,7 @@ impl Resource {
     }
 
     pub fn render(&self, site: &Site) -> Vec<u8> {
-        let (front_matter, content) = self.read(site).unwrap();
+        let page = Page::from_resource(&self, &site);
 
         let mut tera = site.tera.write().unwrap();
         let mut extra_context = tera::Context::new();
@@ -78,60 +132,47 @@ impl Resource {
         // but for now, we just set this so that Zola themes don't complain
         extra_context.insert("lang", "en");
 
-        extra_context.insert("config", &site.config);
+        extra_context.insert("current_url", &page.permalink);
+        extra_context.insert("current_path", &page.url);
 
-        // TODO: how to refactor this?
-        // Basically the if/else branches are the same,
-        // but constructing PageTemplateContext with different type parameters.
-        if let Some(event) = nostr::parse_event(&front_matter, &content) {
-            let mut tags = event.get_tags_hash();
-            if !tags.contains_key("title") {
-                tags.insert("title".to_string(), "".to_string());
-            }
-            extra_context.insert(
-                "page",
-                &PageTemplateContext {
-                    slug: self.slug.to_owned(),
-                    date: self.date,
-                    tags,
-                    content: md_to_html(&content),
-                    summary: event.get_long_form_summary(),
-                    url: self.get_resource_url().unwrap(),
-                },
-            );
-        } else {
-            extra_context.insert(
-                "page",
-                &PageTemplateContext {
-                    slug: self.slug.to_owned(),
-                    date: self.date,
-                    tags: front_matter,
-                    content: md_to_html(&content),
-                    summary: None,
-                    url: self.get_resource_url().unwrap(),
-                },
-            );
-        }
+        extra_context.insert("config", &site.config);
         extra_context.insert("data", &site.data);
+        extra_context.insert("page", &page);
 
         let resources = site.resources.read().unwrap();
-        let mut posts_list = resources
-            .values()
-            .collect::<Vec<&Resource>>()
+        let mut resources_list = resources.values().collect::<Vec<&Resource>>();
+        resources_list.sort_by(|a, b| b.date.cmp(&a.date));
+        let pages_list = resources_list
             .into_iter()
-            .filter(|r| r.kind == ResourceKind::Post)
-            .collect::<Vec<&Resource>>();
-        posts_list.sort_by(|a, b| b.date.cmp(&a.date));
-        extra_context.insert("posts", &posts_list);
+            .filter(|r| r.kind == ResourceKind::Post || r.kind == ResourceKind::Page)
+            .map(|r| Page::from_resource(r, site))
+            .collect::<Vec<Page>>();
 
-        let rendered_text = render(&content, Some(extra_context.clone()), &mut tera);
-        let html = md_to_html(&rendered_text);
+        // NB: some themes expect to iterate over section.pages, others look for paginator.pages.
+        // We are currently passing both in all cases, so all themes will find the pages.
+        extra_context.insert(
+            "section",
+            &Section {
+                pages: pages_list.clone(),
+                title: None,       // TODO
+                content: None,     // TODO
+                description: None, // TODO
+            },
+        );
+        // TODO: paginator.pages should be paginated, but it is not.
+        extra_context.insert(
+            "paginator",
+            &Paginator {
+                pages: pages_list.clone(),
+            },
+        );
+
         let template = if self.slug == "index" {
             "index.html"
         } else {
             "page.html"
         };
-        render_template(&template, &mut tera, html, extra_context)
+        render_template(&template, &mut tera, page.content, extra_context)
             .as_bytes()
             .to_vec()
     }
@@ -242,19 +283,4 @@ fn md_to_html(md_content: &str) -> String {
     let mut html_output = String::new();
     pulldown_cmark::html::push_html(&mut html_output, parser);
     html_output
-}
-
-fn render(content: &str, extra_context: Option<tera::Context>, tera: &mut tera::Tera) -> String {
-    let mut context = tera::Context::new();
-    context.insert(
-        "servus",
-        &ServusMetadata {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        },
-    );
-    if let Some(c) = extra_context {
-        context.extend(c);
-    }
-
-    tera.render_str(content, &context).unwrap()
 }

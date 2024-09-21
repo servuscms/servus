@@ -68,7 +68,7 @@ impl Event {
         tags
     }
 
-    fn get_tag(&self, tag: &str) -> Option<String> {
+    pub fn get_tag(&self, tag: &str) -> Option<String> {
         self.get_tags_hash().get(tag).cloned()
     }
 

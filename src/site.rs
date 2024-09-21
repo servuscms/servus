@@ -44,6 +44,7 @@ pub struct SiteConfig {
     pub theme: Option<String>,
     pub title: Option<String>,
 
+    #[serde(flatten)]
     pub extra: HashMap<String, toml::Value>,
 }
 

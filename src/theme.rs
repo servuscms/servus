@@ -47,6 +47,7 @@ pub fn load_themes() -> HashMap<String, Theme> {
         let config = load_config(&format!("{}/config.toml", theme_path));
         if config.is_none() {
             println!("No config for theme: {}. Skipping!", theme_path);
+            continue;
         }
         let config = config.unwrap();
 
