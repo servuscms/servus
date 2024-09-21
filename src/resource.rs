@@ -126,8 +126,12 @@ impl Resource {
 
         let rendered_text = render(&content, Some(extra_context.clone()), &mut tera);
         let html = md_to_html(&rendered_text);
-
-        render_template("page.html", &mut tera, &html, extra_context)
+        let template = if self.slug == "index" {
+            "index.html"
+        } else {
+            "page.html"
+        };
+        render_template(&template, &mut tera, html, extra_context)
             .as_bytes()
             .to_vec()
     }
@@ -136,7 +140,7 @@ impl Resource {
 fn render_template(
     template: &str,
     tera: &mut tera::Tera,
-    content: &str,
+    content: String,
     extra_context: tera::Context,
 ) -> String {
     let mut context = tera::Context::new();
