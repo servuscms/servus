@@ -4,39 +4,42 @@
 
 ## About
 
-**Servus** is a **CMS**, **personal Nostr relay** and **personal Blossom server** fully self-contained within one executable file.
+**Servus** is a minimalist **social media server** fully self-contained within one executable file.
 
-### What?! And why??
+- [x] CMS
+- [x] Personal Nostr relay
+- [x] Personal Blossom server
 
-#### CMS
+### CMS
 
-The CMS part is heavily inspired by [Jekyll](https://jekyllrb.com/). I used to be a big fan of Jekyll and recommended it to anyone asking for an easy way to build a website... until I realized that Jekyll, as awesome as it is, is actually not very friendly with beginners for a few reasons: 1) lack of an admin interface ("I should use an *editor* to create a file?") 2) the *build step* which takes a long time - no immediate feedback 3) needing to run a web server to serve Jekyll's output (sure, GitHub pages would also do, but even setting that up is too much for many people).
+As a CMS, Servus sits somewhere in between [Jekyll](https://jekyllrb.com/) and WordPress.
 
-At the same time, these beginners that find Jekyll hard to use, think WordPress is easier. And as much as I dislike WP, I had to admit... it was 1) easier to install (copy a bunch of files, versus fighting Ruby Gems and configuring nginx) 2) had a decent admin interface 3) click "Save" and see the result live!
+Like Jekyll:
+ * all content is stored in flat files
 
-But I pretty much refuse to run WordPress or to recommend it to anyone. So, I had to come up with an alternative...
+Unlike Jekyll:
+ * no build step
+ * no need to manually edit the files
+ * no need to configure a web server
+ * no dependencies on Ruby Gems, Docker, etc.
 
-Unlike WordPress, **Servus** does not require MySQL or Apache.
+Like WordPress:
+ * admin interface
 
-Unlike Jekyll, **Servus** does not have a build step, does not require nginx or even GitHub pages, does not require you messing with Ruby Gems or Docker and comes with an admin interface where you can manage your content.
+Unlike WordPress:
+ * no need to have a database like MySQL
+ * no need to run a web server like Apache
 
-#### Personal Nostr Relay
+### Personal Nostr Relay & Blossom Server
 
-While I think the Nostr protocol is a step forward from RSS/Atom and ActivityPub and will eventually supersede both, writing apps that make use of the Nostr protocol is still widely misunderstood. People use Nostr clients to post to Nostr relays they have absolutely no control over. This model may work for certain use cases where you don't need long term persistence of the content... But I want to be in control of my own data and know my data is there to stay.
+ - [x] own your identity
+ - [x] own your data
 
-**Servus** is the "canonical" source of my data, which it exposes as a Nostr relay.
+If you already have a Nostr keypair, you already own your identity. But you only really own your data when you self-host it. Don't rely on other relays to store your data.
 
-Always remember, the *T* in Nostr stands for "transmitted". Relays are used to *relay* your data, not to *store* it!
+Blossom is a protocol adjacent to Nostr that specifies how files (such as images) are to be stored.
 
-#### Personal Blossom Server
-
-A CMS is incomplete if all it can deal with is text. It goes without saying that if you want to be in control of your data, that includes your images. Servus acts as your personal [Blossom](https://github.com/hzrd149/blossom) server.
-
-## Goals and non-goals
-
-Saying "let's build a CMS" is like saying "let's build a housing unit" in that 1) it's nothing new and 2) it is *extremely vague*. Therefore, defining the goals and non-goals of *this particular* CMS is essential for staying on track. Also, by reading these points, you can quickly decide whether Servus suits your particular needs or pick up one of the other 999 CMSes available to choose from...
-
-### Goals
+## Features
 
 * **Single executable** that you can `scp` to a bare VPS and it will just work. Without Docker, without MySQL, without Python venv, without Node or PHP, without setting up an nginx reverse proxy and whatnot... You shouldn't need any of that to self-host your personal website!
 * All content and settings stored as **plain text**. Except, of course, images or other media you have as content. Not in a SQL database, not in "the cloud", not in "some Nostr relays"... but in plain text files on the machine running Servus.
@@ -46,9 +49,11 @@ Saying "let's build a CMS" is like saying "let's build a housing unit" in that 1
 * **Support for "themes"**. *Simple* doesn't mean ugly nor does it mean it should be limited in any way. Avoiding unnecessary client-side technologies doesn't mean the websites built using Servus need to look "old school" or be limited in functionality. In fact, themes *can* use Javascript *if they want to* - for certain effects, etc. The goal is to not *require* Javascript as part of the overall architecture, not to avoid it at any cost.
 * **Multiple websites** that can be separately administered in one instance. So you will be able to, for example, self-host your personal website, your business's website and have your uncle host his blog, all with a single Servus instance.
 
-### Performance and limitations
+## Performance and limitations
 
-Being first and foremost a *web-based CMS* and then a *personal Nostr relay*, **the (perceived) performance for the visitors of web pages** hosted using Servus is the most important.
+The web is the social network!
+
+**The (perceived) performance for the visitors of web pages** hosted using Servus is the most important.
 
 As mentioned above, the web browser does not need to run any client-side code or make any additional requests to get the full experience! Plain HTML, CSS + any images, etc... It is also very easy to put a CDN in front of Servus and make requests even faster because of this very reason (static pages with no dependence on external requests)!
 
@@ -83,7 +88,7 @@ Things are definitely going to improve, but for now I am too busy building a sol
 
 ## Themes
 
-**Servus** currently supports **Zola**'s [Hyde](https://github.com/getzola/hyde/) theme. Some other Zola themes might work - at least the very simple ones - but I have never tried. More Zola themes will be supported in the future.
+**Servus** currently supports **Zola**'s [Hyde](https://github.com/getzola/hyde/) theme. Some other Zola themes also work, some not.
 
 ## Want to try it out?
 
