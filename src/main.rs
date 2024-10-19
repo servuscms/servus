@@ -1,9 +1,13 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
+use bytes::Bytes;
 use clap::Parser;
+use futures_util::stream::once;
 use http_types::{mime, Method};
-use phf::phf_set;
+use multer::Multipart;
+use phf::{phf_map, phf_set};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::convert::Infallible;
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -67,6 +71,13 @@ struct State {
 struct PostSiteRequestBody {
     domain: String,
 }
+
+static NIP96_CONTENT_TYPES: phf::Map<&'static str, &'static str> = phf_map! {
+    "image/png" => "png",
+    "image/jpeg" => "jpg",
+    "image/gif" => "gif",
+    "audio/mpeg" => "mp3",
+};
 
 static BLOSSOM_CONTENT_TYPES: phf::Set<&'static str> = phf_set! {
     "audio/mpeg",
@@ -238,8 +249,8 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
         match resources.get("/index") {
             Some(..) => Ok(render_and_build_response(&site, "/index".to_owned())),
             None => Ok(Response::builder(StatusCode::NotFound)
-                      .header("Access-Control-Allow-Origin", "*")
-                      .build())
+                .header("Access-Control-Allow-Origin", "*")
+                .build()),
         }
     } else {
         return Ok(Response::new(StatusCode::NotFound));
@@ -275,6 +286,18 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
         return Ok(Response::builder(StatusCode::Ok)
             .content_type(mime::HTML)
             .body(admin_index)
+            .build());
+    }
+
+    if path == ".well-known/nostr/nip96.json" {
+        let nip96_json = format!(
+            "{{ \"api_url\": \"https://{}/api/files\", \"download_url\": \"https://{}/\" }}",
+            request.host().unwrap(),
+            request.host().unwrap()
+        );
+        return Ok(Response::builder(StatusCode::Ok)
+            .content_type(mime::JSON)
+            .body(nip96_json)
             .build());
     }
 
@@ -398,6 +421,14 @@ fn nostr_auth(request: &Request<State>) -> Option<String> {
         .get_nip98_pubkey(request.url().as_str(), request.method().as_ref())
 }
 
+fn blossom_upload_auth(request: &Request<State>) -> Option<String> {
+    blossom_auth(request, "upload")
+}
+
+fn blossom_delete_auth(request: &Request<State>) -> Option<String> {
+    blossom_auth(request, "delete")
+}
+
 fn blossom_auth(request: &Request<State>, method: &str) -> Option<String> {
     get_nostr_auth_event(request)?.get_blossom_pubkey(method)
 }
@@ -455,7 +486,7 @@ async fn handle_get_sites(request: Request<State>) -> tide::Result<Response> {
         .build())
 }
 
-async fn handle_list_request(request: Request<State>) -> tide::Result<Response> {
+async fn handle_blossom_list_request(request: Request<State>) -> tide::Result<Response> {
     let site_path = {
         if let Some(site) = get_site(&request) {
             let pubkey = request.param("pubkey").unwrap();
@@ -504,7 +535,160 @@ async fn handle_list_request(request: Request<State>) -> tide::Result<Response> 
         .build());
 }
 
-async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Response> {
+fn is_authorized(
+    request: &Request<State>,
+    site: &Site,
+    get_pubkey: &dyn Fn(&Request<State>) -> Option<String>,
+) -> bool {
+    if let Some(pubkey) = get_pubkey(&request) {
+        if let Some(site_pubkey) = site.config.pubkey.to_owned() {
+            if site_pubkey != pubkey {
+                log::info!("Non-matching key.");
+                return false;
+            }
+        } else {
+            log::info!("The site has no pubkey.");
+            return false;
+        }
+    } else {
+        log::info!("Missing auth header.");
+        return false;
+    }
+
+    return true;
+}
+
+fn write_file<C>(
+    site_path: &str,
+    host: &str,
+    hash: &str,
+    mime: &http_types::mime::Mime,
+    size: usize,
+    content: C,
+) -> FileMetadata
+where
+    C: AsRef<[u8]>,
+{
+    let metadata = FileMetadata {
+        sha256: hash.to_owned(),
+        content_type: mime.essence().to_owned(),
+        size,
+        url: format!("https://{}/{}", host, hash),
+    };
+
+    fs::create_dir_all(format!("{}/_content/files", site_path)).unwrap();
+    fs::write(format!("{}/_content/files/{}", site_path, hash), content).unwrap();
+    fs::write(
+        format!("{}/_content/files/{}.metadata.json", site_path, hash),
+        serde_json::to_string(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    metadata
+}
+
+fn delete_file(site_path: &str, hash: &str) {
+    fs::remove_file(format!("{}/_content/files/{}", site_path, hash)).unwrap();
+    fs::remove_file(format!(
+        "{}/_content/files/{}.metadata.json",
+        site_path, hash
+    ))
+    .unwrap();
+}
+
+async fn handle_nip96_upload_request(mut request: Request<State>) -> tide::Result<Response> {
+    if request.method() == Method::Options {
+        return Ok(Response::builder(StatusCode::Ok)
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Headers", "Authorization")
+            .build());
+    }
+
+    let site_path = {
+        if let Some(site) = get_site(&request) {
+            if !is_authorized(&request, &site, &nostr_auth) {
+                return Ok(Response::builder(StatusCode::Forbidden)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .build());
+            }
+            site.path.clone()
+        } else {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        }
+    };
+
+    let content_type = request
+        .header(tide::http::headers::CONTENT_TYPE)
+        .unwrap()
+        .as_str();
+    let boundary_index = content_type.find("boundary=").unwrap();
+    let boundary: String = content_type
+        .chars()
+        .skip(boundary_index)
+        .skip("boundary=".len())
+        .collect();
+    let bytes = request.body_bytes().await?;
+    let stream = once(async move { Result::<Bytes, Infallible>::Ok(Bytes::from(bytes)) });
+    let mut multipart = Multipart::new(stream, boundary);
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        if field.name().unwrap() == "file" {
+            let content = field.bytes().await.unwrap();
+            let hash = sha256::digest(&*content);
+            let mime = mime::Mime::sniff(&content);
+            if mime.is_err() || !NIP96_CONTENT_TYPES.contains_key(mime.as_ref().unwrap().essence())
+            {
+                return Ok(Response::builder(StatusCode::BadRequest)
+                    .content_type(mime::JSON)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(json!({"status": "error", "message": "Unknown content type."}))
+                    .build());
+            }
+
+            let metadata = write_file(
+                &site_path,
+                request.host().unwrap(),
+                &hash,
+                &mime.unwrap(),
+                content.len(),
+                content,
+            );
+
+            return Ok(Response::builder(StatusCode::Created)
+               .content_type(mime::JSON)
+               .header("Access-Control-Allow-Origin", "*")
+               .body(json!({"status": "success", "nip94_event": {"tags": [["url", metadata.url], ["ox", hash]]}}).to_string())
+               .build());
+        }
+    }
+
+    Ok(Response::builder(StatusCode::BadRequest)
+        .content_type(mime::JSON)
+        .header("Access-Control-Allow-Origin", "*")
+        .body(json!({"status": "error", "message": "File not found."}))
+        .build())
+}
+
+async fn handle_nip96_delete_request(request: Request<State>) -> tide::Result<Response> {
+    let site_path = {
+        if let Some(site) = get_site(&request) {
+            if !is_authorized(&request, &site, &nostr_auth) {
+                return Ok(Response::builder(StatusCode::Forbidden).build());
+            }
+            site.path.clone()
+        } else {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        }
+    };
+
+    delete_file(&site_path, request.param("sha256").unwrap());
+
+    return Ok(Response::builder(StatusCode::Ok)
+        .content_type(mime::JSON)
+        .body(json!({ "status": "success" }))
+        .build());
+}
+
+async fn handle_blossom_upload_request(mut request: Request<State>) -> tide::Result<Response> {
     if request.method() == Method::Options {
         return Ok(Response::builder(StatusCode::Ok)
             .header("Access-Control-Allow-Origin", "*")
@@ -515,27 +699,11 @@ async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Resp
 
     let site_path = {
         if let Some(site) = get_site(&request) {
-            if let Some(pubkey) = blossom_auth(&request, "upload") {
-                if let Some(site_pubkey) = site.config.pubkey {
-                    if site_pubkey != pubkey {
-                        log::info!("Non-matching key.");
-                        return Ok(Response::builder(StatusCode::Unauthorized)
-                            .header("Access-Control-Allow-Origin", "*")
-                            .build());
-                    }
-                } else {
-                    log::info!("The site has no pubkey.");
-                    return Ok(Response::builder(StatusCode::Unauthorized)
-                        .header("Access-Control-Allow-Origin", "*")
-                        .build());
-                }
-            } else {
-                log::info!("Missing Blossom auth.");
+            if !is_authorized(&request, &site, &blossom_upload_auth) {
                 return Ok(Response::builder(StatusCode::Unauthorized)
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
-
             site.path.clone()
         } else {
             return Ok(Response::builder(StatusCode::NotFound).build());
@@ -555,20 +723,14 @@ async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Resp
             .build());
     }
 
-    let metadata = FileMetadata {
-        sha256: hash.to_owned(),
-        content_type: mime.unwrap().essence().to_owned(),
-        size: bytes.len(),
-        url: format!("https://{}/{}", request.host().unwrap(), hash),
-    };
-
-    fs::create_dir_all(format!("{}/_content/files", site_path)).unwrap();
-    fs::write(format!("{}/_content/files/{}", site_path, hash), bytes).unwrap();
-    fs::write(
-        format!("{}/_content/files/{}.metadata.json", site_path, hash),
-        serde_json::to_string(&metadata).unwrap(),
-    )
-    .unwrap();
+    let metadata = write_file(
+        &site_path,
+        request.host().unwrap(),
+        &hash,
+        &mime.unwrap(),
+        bytes.len(),
+        bytes,
+    );
 
     return Ok(Response::builder(StatusCode::Created)
         .content_type(mime::JSON)
@@ -577,46 +739,23 @@ async fn handle_upload_request(mut request: Request<State>) -> tide::Result<Resp
         .build());
 }
 
-async fn handle_delete_request(request: Request<State>) -> tide::Result<Response> {
+async fn handle_blossom_delete_request(request: Request<State>) -> tide::Result<Response> {
     let site_path = {
         if let Some(site) = get_site(&request) {
-            if let Some(pubkey) = blossom_auth(&request, "delete") {
-                if let Some(site_pubkey) = site.config.pubkey {
-                    if site_pubkey != pubkey {
-                        log::info!("Non-matching key.");
-                        return Ok(Response::builder(StatusCode::Unauthorized)
-                            .header("Access-Control-Allow-Origin", "*")
-                            .build());
-                    }
-                } else {
-                    log::info!("Site has no pubkey.");
-                    return Ok(Response::builder(StatusCode::Unauthorized)
-                        .header("Access-Control-Allow-Origin", "*")
-                        .build());
-                }
-            } else {
-                log::info!("Missing Blossom auth.");
+            if !is_authorized(&request, &site, &blossom_delete_auth) {
                 return Ok(Response::builder(StatusCode::Unauthorized)
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
-
             site.path.clone()
         } else {
             return Ok(Response::builder(StatusCode::NotFound).build());
         }
     };
 
-    let hash = request.param("sha256").unwrap();
+    delete_file(&site_path, request.param("sha256").unwrap());
 
-    fs::remove_file(format!("{}/_content/files/{}", site_path, hash)).unwrap();
-    fs::remove_file(format!(
-        "{}/_content/files/{}.metadata.json",
-        site_path, hash
-    ))
-    .unwrap();
-
-    return Ok(Response::builder(StatusCode::Created)
+    return Ok(Response::builder(StatusCode::Ok)
         .content_type(mime::JSON)
         .header("Access-Control-Allow-Origin", "*")
         .body(json!({}))
@@ -678,14 +817,25 @@ async fn main() -> Result<(), std::io::Error> {
         .with(WebSocket::new(handle_websocket))
         .get(handle_index);
     app.at("*path").options(handle_request).get(handle_request);
-    app.at("/upload")
-        .options(handle_upload_request)
-        .put(handle_upload_request);
-    app.at("/list/:pubkey").get(handle_list_request);
-    app.at("/:sha256").delete(handle_delete_request);
+
+    // API
     app.at("/api/sites")
         .post(handle_post_site)
         .get(handle_get_sites);
+
+    // Blossom API
+    app.at("/upload")
+        .options(handle_blossom_upload_request)
+        .put(handle_blossom_upload_request);
+    app.at("/list/:pubkey").get(handle_blossom_list_request);
+    app.at("/:sha256").delete(handle_blossom_delete_request);
+
+    // NIP-96 API
+    app.at("/api/files")
+        .options(handle_nip96_upload_request)
+        .post(handle_nip96_upload_request);
+    app.at("/api/files/:sha256")
+        .delete(handle_nip96_delete_request);
 
     let addr = args.bind.unwrap_or("0.0.0.0".to_owned());
 

@@ -73,7 +73,7 @@
                 }
             }
 
-            function getBlossomBaseUrl(siteDomain) {
+            function getApiBaseUrl(siteDomain) {
                 if (API_BASE_URL.startsWith("//localhost:")) {
                     return `http:${API_BASE_URL}`;
                 } else {
@@ -172,7 +172,7 @@
             async function getFiles(site, files) {
                 files.length = 0;
 
-                const res = await fetch(new URL(`${getBlossomBaseUrl(site.domain)}/list/${await window.nostr.getPublicKey()}`));
+                const res = await fetch(new URL(`${getApiBaseUrl(site.domain)}/list/${await window.nostr.getPublicKey()}`));
                 for (f of await res.json()) {
                     files.push(f);
                 }
@@ -191,8 +191,33 @@
                 };
             }
 
+            async function uploadFileNip96(site, onSuccess) {
+                const endpoint = `${getApiBaseUrl(site.domain)}/api/files`;
+                const request = new XMLHttpRequest();
+                const formData = new FormData();
+                request.open("POST", endpoint, true);
+                request.setRequestHeader('Authorization', await getNostrAuthHeader(endpoint, 'POST'));
+                request.onreadystatechange = () => {
+                    if (request.readyState === 4 && request.status === 201) {
+                        onSuccess();
+                    }
+                };
+                let fileInput = document.querySelector('#fileInput');
+                formData.append('file', fileInput.files[0]);
+                request.send(formData);
+            }
+
+            async function deleteFileNIP96(site, sha256) {
+                let endpoint = `${getApiBaseUrl(site.domain)}/api/files/${sha256}`;
+                await fetch(new URL(endpoint),
+                    {
+                        method: 'DELETE',
+                        headers: { authorization: await getNostrAuthHeader(endpoint, 'DELETE') }
+                    });
+            }
+
             async function uploadFileBlossom(site) {
-                const endpoint = `${getBlossomBaseUrl(site.domain)}/upload`;
+                const endpoint = `${getApiBaseUrl(site.domain)}/upload`;
                 let fileInput = document.querySelector('#fileInput');
                 let sha256 = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", await fileInput.files[0].arrayBuffer())));
                 const res = await fetch(new URL(endpoint), {
@@ -203,8 +228,8 @@
                 return (await res.json());
             }
 
-            async function deleteFile(site, sha256) {
-                let endpoint = `${getBlossomBaseUrl(site.domain)}/${sha256}`;
+            async function deleteFileBlossom(site, sha256) {
+                let endpoint = `${getApiBaseUrl(site.domain)}/${sha256}`;
                 await fetch(new URL(endpoint),
                     {
                         method: 'DELETE',
@@ -306,14 +331,16 @@
                                             <div class="card-body">
                                                 <p x-text="`${Math.floor(f.size / 1024)} kb`"></p>
                                                 <div class="card-actions justify-end">
-                                                    <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { await deleteFile(site, f.sha256); getFiles(site, files); }">Delete</button>
+                                                    <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { await deleteFileBlossom(site, f.sha256); getFiles(site, files); }">Delete (Blossom)</button>
+                                                    <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { await deleteFileNIP96(site, f.sha256); getFiles(site, files); }">Delete (NIP-96)</button>
                                                 </div>
                                             </div>
                                         </div>
                                     </template>
                                     <div>
                                         <input type="file" id="fileInput" />
-                                        <button x-on:click="await uploadFileBlossom(site); await getFiles(site, files);" class="btn btn-primary">Upload</button>
+                                        <button x-on:click="await uploadFileBlossom(site); await getFiles(site, files);" class="btn btn-primary">Upload (Blossom)</button>
+                                        <button x-on:click="await uploadFileNip96(site, () => { getFiles(site, files); });" class="btn btn-primary">Upload (NIP-96)</button>
                                     </div>
                                 </div>
                             </template> <!-- fileManager -->

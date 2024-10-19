@@ -8,7 +8,7 @@
 
 - [x] CMS
 - [x] Personal Nostr relay
-- [x] Personal Blossom server
+- [x] Personal file server (Blossom & NIP-96)
 
 ### CMS
 
@@ -30,14 +30,14 @@ Unlike WordPress:
  * no need to have a database like MySQL
  * no need to run a web server like Apache
 
-### Personal Nostr Relay & Blossom Server
+### Personal Nostr Relay & File server (Blossom & NIP-96)
 
  - [x] own your identity
  - [x] own your data
 
 If you already have a Nostr keypair, you already own your identity. But you only really own your data when you self-host it. Don't rely on other relays to store your data.
 
-Blossom is a protocol adjacent to Nostr that specifies how files (such as images) are to be stored.
+[Blossom](https://github.com/hzrd149/blossom) and [NIP-96](https://github.com/nostr-protocol/nips/blob/master/96.md) are protocols adjacent to Nostr that specify how files (such as images) are to be stored on HTTP servers.
 
 ## Features
 
@@ -216,7 +216,18 @@ NB: Both requests require a [NIP-98](https://github.com/nostr-protocol/nips/blob
 
 ## Blossom API
 
-Servus also implements the [Blossom API](https://github.com/hzrd149/blossom) and therefore acts as your personal Blossom server.
+Servus implements the [Blossom API](https://github.com/hzrd149/blossom) and therefore acts as your personal Blossom server.
+
+* PUT `/upload`
+* GET `/list/<pubkey>`
+* DELETE `/<sha256>`
+
+## NIP-96 API
+
+Servus implements [NIP-96](https://github.com/nostr-protocol/nips/blob/master/96.md) file storage.
+
+* POST `/api/files`
+* DELETE `/api/files/<sha256>`
 
 ## Admin interface
 
