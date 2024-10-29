@@ -42,6 +42,10 @@ lazy_static! {
 }
 
 impl Event {
+    pub fn is_parameterized_replaceable(&self) -> bool {
+        return 30000 <= self.kind && self.kind < 40000;
+    }
+
     pub fn is_long_form(&self) -> bool {
         self.kind == EVENT_KIND_LONG_FORM || self.kind == EVENT_KIND_LONG_FORM_DRAFT
     }

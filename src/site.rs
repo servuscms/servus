@@ -252,7 +252,7 @@ impl Site {
             (_, Some(ResourceKind::Post)) => format!("posts/{}.md", event_d_tag.unwrap()),
             (_, Some(ResourceKind::Page)) => format!("pages/{}.md", event_d_tag.unwrap()),
             (_, Some(ResourceKind::Note)) => format!("notes/{}.md", event_id),
-            _ => return None,
+            _ => format!("events/{}.md", event_id),
         });
 
         Some(path.display().to_string())
@@ -280,20 +280,21 @@ impl Site {
 
         let mut events = self.events.write().unwrap();
 
-        let mut matched_event_id: Option<String> = None;
-        {
-            for event_ref in events.values() {
+        if event.is_parameterized_replaceable() {
+            let mut matched_event_id: Option<String> = None;
+            {
                 if event_d_tag.is_some() {
-                    if event_ref.d_tag == event_d_tag {
-                        matched_event_id = Some(event_ref.id.to_owned());
+                    for event_ref in events.values() {
+                        if event_ref.d_tag == event_d_tag {
+                            matched_event_id = Some(event_ref.id.to_owned());
+                        }
                     }
                 }
             }
-        }
-
-        if let Some(matched_event_id) = matched_event_id {
-            log::info!("Removing (outdated) event: {}!", &matched_event_id);
-            events.remove(&matched_event_id);
+            if let Some(matched_event_id) = matched_event_id {
+                log::info!("Removing (outdated) event: {}!", &matched_event_id);
+                events.remove(&matched_event_id);
+            }
         }
 
         events.insert(event.id.to_owned(), event_ref.clone());

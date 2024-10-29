@@ -147,30 +147,18 @@ async fn handle_websocket(
                     continue;
                 }
 
-                if cmd.event.kind == nostr::EVENT_KIND_NOTE
-                    || cmd.event.kind == nostr::EVENT_KIND_LONG_FORM
-                    || cmd.event.kind == nostr::EVENT_KIND_LONG_FORM_DRAFT
-                {
-                    if let Some(site) = get_site(&request) {
-                        site.add_content(&cmd.event);
-                    } else {
-                        return Ok(());
-                    }
-                    ws.send_json(&json!(vec![
-                        serde_json::Value::String("OK".to_string()),
-                        serde_json::Value::String(cmd.event.id.to_string()),
-                        serde_json::Value::Bool(true),
-                        serde_json::Value::String("".to_string())
-                    ]))
-                    .await
-                    .unwrap();
-                } else if cmd.event.kind == nostr::EVENT_KIND_DELETE {
+                if cmd.event.kind == nostr::EVENT_KIND_DELETE {
                     let post_removed: bool;
                     if let Some(site) = get_site(&request) {
                         post_removed = site.remove_content(&cmd.event);
                     } else {
                         return Ok(());
                     }
+                    log::info!(
+                        "Incoming DELETE event: {}. status: {}",
+                        cmd.event.id,
+                        post_removed
+                    );
                     ws.send_json(&json!(vec![
                         serde_json::Value::String("OK".to_string()),
                         serde_json::Value::String(cmd.event.id.to_string()),
@@ -180,8 +168,20 @@ async fn handle_websocket(
                     .await
                     .unwrap();
                 } else {
-                    log::info!("Ignoring event of unknown kind: {}.", cmd.event.kind);
-                    continue;
+                    if let Some(site) = get_site(&request) {
+                        site.add_content(&cmd.event);
+                    } else {
+                        return Ok(());
+                    }
+                    log::info!("Incoming event: {}.", cmd.event.id);
+                    ws.send_json(&json!(vec![
+                        serde_json::Value::String("OK".to_string()),
+                        serde_json::Value::String(cmd.event.id.to_string()),
+                        serde_json::Value::Bool(true),
+                        serde_json::Value::String("".to_string())
+                    ]))
+                    .await
+                    .unwrap();
                 }
             }
             nostr::Message::Req(cmd) => {
