@@ -186,32 +186,56 @@ async fn handle_websocket(
             }
             nostr::Message::Req(cmd) => {
                 let mut events: Vec<nostr::Event> = vec![];
+                let mut filter_by_authors = false;
+                let mut filter_authors: Vec<String> = vec![];
+                let mut filter_by_kinds = false;
+                let mut filter_kinds: Vec<i64> = vec![];
                 for (filter_by, filter) in &cmd.filter.extra {
-                    if filter_by != "kinds" {
+                    if filter_by == "authors" {
+                        filter_by_authors = true;
+                        filter_authors = filter
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|f| f.as_str().unwrap().to_string())
+                            .collect();
+                    } else if filter_by == "kinds" {
+                        filter_by_kinds = true;
+                        filter_kinds = filter
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|f| f.as_i64().unwrap())
+                            .collect();
+                    } else {
                         log::info!("Ignoring unknown filter: {}.", filter_by);
                         continue;
                     }
-                    let filter_kinds: Vec<i64> = filter
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|f| f.as_i64().unwrap())
-                        .collect();
+                }
 
-                    if let Some(site) = get_site(&request) {
+                if let Some(site) = get_site(&request) {
+                    let matches_site_author =
+                        !filter_by_authors || filter_authors.contains(&site.config.pubkey.unwrap());
+                    if matches_site_author {
                         for event_ref in site.events.read().unwrap().values() {
-                            if filter_kinds.contains(&event_ref.kind) {
+                            let matches_kind =
+                                !filter_by_kinds || filter_kinds.contains(&event_ref.kind);
+                            if matches_kind {
                                 if let Some((front_matter, content)) = event_ref.read() {
                                     if let Some(event) = nostr::parse_event(&front_matter, &content)
                                     {
-                                        events.push(event);
+                                        let matches_author = !filter_by_authors
+                                            || filter_authors.contains(&event.pubkey);
+                                        if matches_author {
+                                            events.push(event);
+                                        }
                                     }
                                 }
                             }
                         }
-                    } else {
-                        return Ok(());
                     }
+                } else {
+                    return Ok(());
                 }
 
                 for event in &events {

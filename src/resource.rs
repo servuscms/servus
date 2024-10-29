@@ -43,7 +43,7 @@ impl Page {
         let title;
         let summary;
         if let Some(event) = nostr::parse_event(&front_matter, &content) {
-            title = event.get_tag("title").unwrap().to_owned();
+            title = event.get_tag("title").unwrap_or("".to_string()).to_owned();
             summary = event.get_long_form_summary();
         } else {
             title = front_matter
