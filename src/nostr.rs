@@ -153,7 +153,7 @@ impl Event {
 
         let tags = self.get_tags_hash();
         if tags.get("u")? != url {
-            log::info!("NIP-98: Invalid 'u' tag.");
+            log::info!("NIP-98: Invalid 'u' tag: {} vs. {}.", tags.get("u")?, url);
             return None;
         }
         if tags.get("method")? != method {

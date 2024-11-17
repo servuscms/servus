@@ -13,6 +13,7 @@ use tide::log;
 use walkdir::WalkDir;
 
 const DEFAULT_THEME: &str = "hyde";
+pub const SITE_PATH: &str = "./sites";
 
 use crate::{
     content, nostr,
@@ -28,7 +29,7 @@ pub struct ServusMetadata {
 
 #[derive(Clone)]
 pub struct Site {
-    pub path: String,
+    pub domain: String,
     pub config: SiteConfig,
     pub data: Arc<RwLock<HashMap<String, serde_yaml::Value>>>,
     pub events: Arc<RwLock<HashMap<String, EventRef>>>,
@@ -101,7 +102,7 @@ fn load_templates(site_config: &SiteConfig) -> tera::Tera {
 
 impl Site {
     pub fn load_resources(&self) {
-        let mut root = PathBuf::from(&self.path);
+        let mut root = PathBuf::from(format!("{}/{}", SITE_PATH, self.domain));
         root.push("_content/");
         if !root.as_path().exists() {
             return;
@@ -245,7 +246,7 @@ impl Site {
         event_d_tag: Option<String>,
     ) -> Option<String> {
         // TODO: read all this from config
-        let mut path = PathBuf::from(&self.path);
+        let mut path = PathBuf::from(format!("{}/{}", SITE_PATH, self.domain));
         path.push("_content/");
         path.push(match (event_kind, resource_kind) {
             (nostr::EVENT_KIND_CUSTOM_DATA, _) => format!("data/{}.md", event_d_tag.unwrap()),
@@ -438,6 +439,10 @@ impl EventRef {
     }
 }
 
+pub fn save_config(path: &str, config: SiteConfig) {
+    fs::write(path, toml::to_string(&config).unwrap()).unwrap();
+}
+
 pub fn load_config(config_path: &str) -> Option<SiteConfig> {
     if let Ok(content) = fs::read_to_string(config_path) {
         Some(toml::from_str(&content).unwrap())
@@ -446,46 +451,53 @@ pub fn load_config(config_path: &str) -> Option<SiteConfig> {
     }
 }
 
+pub fn load_site(domain: &str) -> Site {
+    let path = format!("{}/{}", SITE_PATH, domain);
+    let config = load_config(&format!("{}/_config.toml", path));
+    if config.is_none() {
+        println!("No site config for site: {}. Skipping!", path);
+    }
+
+    let mut config = config.unwrap();
+
+    let theme_path = format!("./themes/{}", config.theme.as_ref().unwrap());
+    let theme_config = load_config(&format!("{}/config.toml", theme_path)).unwrap();
+
+    config.merge(&theme_config);
+
+    let tera = load_templates(&config);
+
+    let site = Site {
+        domain: domain.to_owned(),
+        config,
+        data: Arc::new(RwLock::new(HashMap::new())),
+        events: Arc::new(RwLock::new(HashMap::new())),
+        resources: Arc::new(RwLock::new(HashMap::new())),
+        tera: Arc::new(RwLock::new(tera)),
+    };
+
+    site.load_resources();
+
+    site
+}
+
 pub fn load_sites() -> HashMap<String, Site> {
-    let paths = match fs::read_dir("./sites") {
+    let paths = match fs::read_dir(SITE_PATH) {
         Ok(paths) => paths.map(|r| r.unwrap()).collect(),
         _ => vec![],
     };
 
     let mut sites = HashMap::new();
     for path in &paths {
-        println!("Found site: {}", path.file_name().to_str().unwrap());
+        let file_name = path.file_name();
+        let domain = file_name.to_str().unwrap();
 
-        let site_path = path.path().display().to_string();
-
-        let config = load_config(&format!("{}/_config.toml", site_path));
-        if config.is_none() {
-            println!("No site config for site: {}. Skipping!", site_path);
-        }
-
-        let mut config = config.unwrap();
-
-        let theme_path = format!("./themes/{}", config.theme.as_ref().unwrap());
-        let theme_config = load_config(&format!("{}/config.toml", theme_path)).unwrap();
-
-        config.merge(&theme_config);
-
-        let tera = load_templates(&config);
-
-        let site = Site {
-            config,
-            path: site_path,
-            data: Arc::new(RwLock::new(HashMap::new())),
-            events: Arc::new(RwLock::new(HashMap::new())),
-            resources: Arc::new(RwLock::new(HashMap::new())),
-            tera: Arc::new(RwLock::new(tera)),
-        };
-
-        site.load_resources();
-
-        println!("Site loaded!");
-
-        sites.insert(path.file_name().to_str().unwrap().to_string(), site);
+        log::info!("Found site: {}!", domain);
+        sites.insert(
+            path.file_name().to_str().unwrap().to_string(),
+            load_site(&domain),
+        );
+        log::debug!("Site loaded!");
     }
 
     println!("{} sites loaded!", sites.len());
@@ -494,7 +506,7 @@ pub fn load_sites() -> HashMap<String, Site> {
 }
 
 pub fn create_site(domain: &str, admin_pubkey: Option<String>) -> Site {
-    let path = format!("./sites/{}", domain);
+    let path = format!("{}/{}", SITE_PATH, domain);
     fs::create_dir_all(&path).unwrap();
 
     let config_content = format!(
@@ -504,7 +516,11 @@ pub fn create_site(domain: &str, admin_pubkey: Option<String>) -> Site {
         "",
         DEFAULT_THEME
     );
-    fs::write(format!("./sites/{}/_config.toml", domain), &config_content).unwrap();
+    fs::write(
+        format!("{}/{}/_config.toml", SITE_PATH, domain),
+        &config_content,
+    )
+    .unwrap();
 
     let mut config = load_config(&format!("{}/_config.toml", path)).unwrap();
 
@@ -516,8 +532,8 @@ pub fn create_site(domain: &str, admin_pubkey: Option<String>) -> Site {
     let tera = load_templates(&config);
 
     let site = Site {
+        domain: domain.to_owned(),
         config,
-        path,
         data: Arc::new(RwLock::new(HashMap::new())),
         events: Arc::new(RwLock::new(HashMap::new())),
         resources: Arc::new(RwLock::new(HashMap::new())),

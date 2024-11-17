@@ -234,12 +234,46 @@
                     {
                         method: 'DELETE',
                         headers: { authorization: await getBlossomAuthHeader('delete', sha256) }
-                    });
+                    }
+                );
+            }
+
+            async function getConfig(site, themes) {
+                themes.length = 0;
+
+                let endpoint = `${getApiBaseUrl(site.domain)}/api/config`;
+                const res = await fetch(new URL(endpoint), {
+                        headers: { authorization: await getNostrAuthHeader(endpoint, 'GET') }
+                });
+                let config = await res.json();
+                for (t of config['available_themes']) {
+                    themes.push({theme: t, selected: t == config['theme']});
+                }
+            }
+
+            async function saveConfig(site, theme) {
+                let endpoint = `${getApiBaseUrl(site.domain)}/api/config`;
+                let response = await fetch(endpoint, {
+                    method: 'PUT',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'Authorization': await getNostrAuthHeader(endpoint, 'PUT'),
+                    },
+                    body: JSON.stringify({
+                        theme: theme,
+                    }),
+                });
+                if (response.ok) {
+                    alert("Theme changed!")
+                } else {
+                    alert("Error changing theme!")
+                }
             }
         </script>
     </head>
     <body>
-        <div class="w-full mx-auto" x-data="{site: null, post: null, note: null, noteManager: false, fileManager: false, postManager: false, pageManager: false, sites: [], posts: [], notes: [], files: []}" x-init="await getSites(sites); site = sites[0];">
+        <div class="w-full mx-auto" x-data="{site: null, post: null, note: null, noteManager: false, fileManager: false, postManager: false, pageManager: false, configManager: false, sites: [], posts: [], notes: [], files: [], themes: []}" x-init="await getSites(sites); site = sites[0];">
             <div class="navbar bg-base-200">
                 <div class="flex-1">
                     <a class="btn btn-ghost text-xl">Servus!</a>
@@ -282,12 +316,13 @@
                     <div>
                         <h1 class="text-2xl text-center" x-text="site.domain"></h1>
                         <div class="flex justify-center items-center mt-12">
-                            <template x-if="!noteManager && !fileManager && !pageManager && !postManager">
+                            <template x-if="!noteManager && !fileManager && !pageManager && !postManager && !configManager">
                                 <div>
                                     <a class="btn btn-lg btn-primary" x-on:click="post = null; noteManager = true; getNotes(site, notes); note = {'content': '', 'site': site}">Notes</a>
                                     <a class="btn btn-lg btn-primary" x-on:click="post = null; fileManager = true; await getFiles(site, files);">Files</a>
                                     <a class="btn btn-lg btn-primary" x-on:click="post = null; pageManager = true; await getPosts(sites, posts);">Pages</a>
                                     <a class="btn btn-lg btn-primary" x-on:click="post = null; postManager = true; await getPosts(sites, posts);">Posts</a>
+                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; configManager = true; await getConfig(site, themes);">Config</a>
                                 </div>
                             </template>
                             <template x-if="noteManager">
@@ -415,7 +450,22 @@
                                         </div>
                                     </template> <!-- !post -->
                                 </div>
-                            </template> <!-- postManager -->
+                            </template> <!-- postManager / pageManager -->
+                            <template x-if="configManager">
+                                <div>
+                                    <a class="btn btn-lg btn-primary btn-outline" x-on:click="configManager = false">Back</a>
+                                    <div class="w-full mt-24">
+                                        <select id="selectTheme">
+                                            <template x-for="t in themes">
+                                                <option x-bind:value="t.theme" x-text="t.theme" x-bind:selected="t.selected"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                    <div class="w-full mt-24">
+                                        <button x-on:click="await saveConfig(site, document.getElementById('selectTheme').value);" class="btn btn-primary mt-1">Save</button>
+                                    </div>
+                                </div>
+                            </template> <!-- configManager -->
                         </div>
                     </div>
                 </template> <!-- /site -->

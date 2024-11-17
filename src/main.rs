@@ -72,6 +72,11 @@ struct PostSiteRequestBody {
     domain: String,
 }
 
+#[derive(Deserialize, Serialize)]
+struct PutSiteConfigRequestBody {
+    theme: String,
+}
+
 static NIP96_CONTENT_TYPES: phf::Map<&'static str, &'static str> = phf_map! {
     "image/png" => "png",
     "image/jpeg" => "jpg",
@@ -382,7 +387,7 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
             if site_resources.contains(&resource_path) {
                 return Ok(render_and_build_response(&site, resource_path));
             } else {
-                resource_path = format!("{}/{}", site.path, path);
+                resource_path = format!("{}/{}/{}", site::SITE_PATH, site.domain, path);
                 for part in resource_path.split('/').collect::<Vec<_>>() {
                     let first_char = part.chars().next().unwrap();
                     if first_char == '_' || (first_char == '.' && part.len() > 1) {
@@ -398,12 +403,19 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
                 } else {
                     // look for an uploaded file
                     if let Some(sha256) = sha256 {
-                        resource_path = format!("{}/_content/files/{}", site.path, sha256);
+                        resource_path = format!(
+                            "{}/{}/_content/files/{}",
+                            site::SITE_PATH,
+                            site.domain,
+                            sha256
+                        );
                         if PathBuf::from(&resource_path).exists() {
                             let raw_content = fs::read(&resource_path).unwrap();
                             let metadata_file = File::open(&format!(
-                                "{}/_content/files/{}.metadata.json",
-                                site.path, sha256
+                                "{}/{}/_content/files/{}.metadata.json",
+                                site::SITE_PATH,
+                                site.domain,
+                                sha256
                             ))
                             .unwrap();
                             let metadata_reader = BufReader::new(metadata_file);
@@ -438,6 +450,10 @@ fn get_nostr_auth_event(request: &Request<State>) -> Option<nostr::Event> {
     Some(
         serde_json::from_str(str::from_utf8(&STANDARD.decode(parts[1]).unwrap()).unwrap()).unwrap(),
     )
+}
+
+fn get_pubkey(request: &Request<State>) -> Option<String> {
+    Some(request.param("pubkey").unwrap().to_string())
 }
 
 fn nostr_auth(request: &Request<State>) -> Option<String> {
@@ -510,25 +526,87 @@ async fn handle_get_sites(request: Request<State>) -> tide::Result<Response> {
         .build())
 }
 
-async fn handle_blossom_list_request(request: Request<State>) -> tide::Result<Response> {
-    let site_path = {
+async fn handle_get_site_config(request: Request<State>) -> tide::Result<Response> {
+    let site = {
         if let Some(site) = get_site(&request) {
-            let pubkey = request.param("pubkey").unwrap();
-            if let Some(site_pubkey) = site.config.pubkey {
-                if site_pubkey != pubkey {
-                    log::info!("Invalid key.");
-                    return Ok(Response::builder(StatusCode::NotFound)
-                        .header("Access-Control-Allow-Origin", "*")
-                        .build());
-                }
-            } else {
-                log::info!("The site has no pubkey.");
-                return Ok(Response::builder(StatusCode::NotFound)
+            if !is_authorized(&request, &site, &nostr_auth) {
+                return Ok(Response::builder(StatusCode::Forbidden)
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
+            site
+        } else {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        }
+    };
 
-            site.path.clone()
+    let themes: Vec<String> = request
+        .state()
+        .themes
+        .read()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+
+    Ok(Response::builder(StatusCode::Ok)
+        .content_type(mime::JSON)
+        .body(
+            json!({"theme": site.config.theme.unwrap_or("".to_string()), "available_themes": themes})
+                .to_string(),
+        )
+        .build())
+}
+
+async fn handle_put_site_config(mut request: Request<State>) -> tide::Result<Response> {
+    let site = {
+        if let Some(site) = get_site(&request) {
+            if !is_authorized(&request, &site, &nostr_auth) {
+                return Ok(Response::builder(StatusCode::Forbidden)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .build());
+            }
+            site
+        } else {
+            return Ok(Response::builder(StatusCode::NotFound).build());
+        }
+    };
+
+    // NB: we need to load config from the file rather than using the one already loaded,
+    // which is already merged with the theme's config!
+    let config_path = format!("{}/{}/_config.toml", site::SITE_PATH, site.domain);
+    let mut config = site::load_config(&config_path).unwrap();
+    config.theme = Some(
+        request
+            .body_json::<PutSiteConfigRequestBody>()
+            .await
+            .unwrap()
+            .theme,
+    );
+    site::save_config(&config_path, config);
+
+    let new_site = site::load_site(&site.domain);
+
+    let state = request.state();
+    let sites = &mut state.sites.write().unwrap();
+    sites.remove(&site.domain);
+    sites.insert(site.domain, new_site);
+
+    Ok(Response::builder(StatusCode::Ok)
+        .content_type(mime::JSON)
+        .body(json!({}).to_string())
+        .build())
+}
+
+async fn handle_blossom_list_request(request: Request<State>) -> tide::Result<Response> {
+    let site_path = {
+        if let Some(site) = get_site(&request) {
+            if !is_authorized(&request, &site, &get_pubkey) {
+                return Ok(Response::builder(StatusCode::Forbidden)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .build());
+            }
+            format!("{}/{}", site::SITE_PATH, site.domain)
         } else {
             return Ok(Response::builder(StatusCode::NotFound).build());
         }
@@ -635,7 +713,7 @@ async fn handle_nip96_upload_request(mut request: Request<State>) -> tide::Resul
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
-            site.path.clone()
+            format!("{}/{}", site::SITE_PATH, site.domain)
         } else {
             return Ok(Response::builder(StatusCode::NotFound).build());
         }
@@ -698,7 +776,7 @@ async fn handle_nip96_delete_request(request: Request<State>) -> tide::Result<Re
             if !is_authorized(&request, &site, &nostr_auth) {
                 return Ok(Response::builder(StatusCode::Forbidden).build());
             }
-            site.path.clone()
+            format!("{}/{}", site::SITE_PATH, site.domain)
         } else {
             return Ok(Response::builder(StatusCode::NotFound).build());
         }
@@ -728,7 +806,7 @@ async fn handle_blossom_upload_request(mut request: Request<State>) -> tide::Res
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
-            site.path.clone()
+            format!("{}/{}", site::SITE_PATH, site.domain)
         } else {
             return Ok(Response::builder(StatusCode::NotFound).build());
         }
@@ -771,7 +849,7 @@ async fn handle_blossom_delete_request(request: Request<State>) -> tide::Result<
                     .header("Access-Control-Allow-Origin", "*")
                     .build());
             }
-            site.path.clone()
+            format!("{}/{}", site::SITE_PATH, site.domain)
         } else {
             return Ok(Response::builder(StatusCode::NotFound).build());
         }
@@ -846,6 +924,11 @@ async fn main() -> Result<(), std::io::Error> {
     app.at("/api/sites")
         .post(handle_post_site)
         .get(handle_get_sites);
+
+    // Site API
+    app.at("/api/config")
+        .get(handle_get_site_config)
+        .put(handle_put_site_config);
 
     // Blossom API
     app.at("/upload")

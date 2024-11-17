@@ -212,7 +212,13 @@ A `POST` to `/api/sites` can be used to add a new site associated with a key.
 
 A `GET` to `/api/sites` can be used to get a list of all the sites belonging to a key.
 
-NB: Both requests require a [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) authorization header to be present!
+### `/api/config`
+
+A `GET` to `/api/config` will return the list of available themes and the currently selected theme.
+
+A `PUT` to `/api/config` can be used to change the site's theme.
+
+NB: All requests require a [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) authorization header to be present!
 
 ## Blossom API
 
