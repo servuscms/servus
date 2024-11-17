@@ -19,6 +19,7 @@ pub enum ResourceKind {
 pub enum ContentSource {
     Event(String),
     File(String),
+    String(String),
 }
 
 #[derive(Clone, Serialize)]
@@ -100,6 +101,15 @@ pub struct Resource {
 impl Resource {
     fn read(&self, site: &Site) -> Option<(HashMap<String, serde_yaml::Value>, String)> {
         let filename = match self.content_source.clone() {
+            ContentSource::String(s) => {
+                return Some((
+                    HashMap::from([(
+                        "title".to_string(),
+                        serde_yaml::Value::String("".to_string()),
+                    )]),
+                    s,
+                ))
+            }
             ContentSource::File(f) => f,
             ContentSource::Event(e_id) => {
                 let events = site.events.read().unwrap();

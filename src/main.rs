@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use bytes::Bytes;
+use chrono::Utc;
 use clap::Parser;
 use futures_util::stream::once;
 use http_types::{mime, Method};
@@ -34,6 +35,7 @@ mod template;
 mod theme;
 mod utils;
 
+use resource::{ContentSource, Resource, ResourceKind};
 use site::Site;
 use theme::Theme;
 
@@ -109,10 +111,12 @@ fn build_raw_response(content: Vec<u8>, mime: mime::Mime) -> Response {
         .build()
 }
 
-fn render_and_build_response(site: &Site, resource_path: String) -> Response {
+fn get_resource(site: &Site, resource_path: &str) -> Resource {
     let resources = site.resources.read().unwrap();
-    let resource = resources.get(&resource_path).unwrap();
+    resources.get(resource_path).unwrap().clone()
+}
 
+fn render_and_build_response(site: &Site, resource: Resource) -> Response {
     Response::builder(StatusCode::Ok)
         .content_type(mime::HTML)
         .header("Access-Control-Allow-Origin", "*")
@@ -276,10 +280,20 @@ async fn handle_index(request: Request<State>) -> tide::Result<Response> {
     if let Some(site) = get_site(&request) {
         let resources = site.resources.read().unwrap();
         match resources.get("/index") {
-            Some(..) => Ok(render_and_build_response(&site, "/index".to_owned())),
-            None => Ok(Response::builder(StatusCode::NotFound)
-                .header("Access-Control-Allow-Origin", "*")
-                .build()),
+            Some(..) => Ok(render_and_build_response(
+                &site,
+                get_resource(&site, "/index"),
+            )),
+            None => Ok(render_and_build_response(
+                &site,
+                Resource {
+                    kind: ResourceKind::Page,
+                    slug: "index".to_string(),
+                    title: Some("".to_string()),
+                    date: Utc::now().naive_utc(),
+                    content_source: ContentSource::String("Servus, world!".to_string()),
+                },
+            )),
         }
     } else {
         return Ok(Response::new(StatusCode::NotFound));
@@ -374,7 +388,10 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
 
         let mut resource_path = format!("/{}", &path);
         if site_resources.contains(&resource_path) {
-            return Ok(render_and_build_response(&site, resource_path));
+            return Ok(render_and_build_response(
+                &site,
+                get_resource(&site, &resource_path),
+            ));
         } else {
             let theme_resources = theme.resources.read().unwrap();
             if theme_resources.contains_key(&resource_path) {
@@ -385,7 +402,10 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
             }
             resource_path = format!("{}/index", &resource_path);
             if site_resources.contains(&resource_path) {
-                return Ok(render_and_build_response(&site, resource_path));
+                return Ok(render_and_build_response(
+                    &site,
+                    get_resource(&site, &resource_path),
+                ));
             } else {
                 resource_path = format!("{}/{}/{}", site::SITE_PATH, site.domain, path);
                 for part in resource_path.split('/').collect::<Vec<_>>() {
