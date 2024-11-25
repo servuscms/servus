@@ -37,6 +37,10 @@ pub struct Site {
     pub tera: Arc<RwLock<tera::Tera>>, // TODO: try to move this to Theme
 }
 
+fn default_feed_filename() -> String {
+    return "atom.xml".to_string();
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SiteConfig {
     pub base_url: String,
@@ -44,6 +48,9 @@ pub struct SiteConfig {
 
     pub theme: Option<String>,
     pub title: Option<String>,
+
+    #[serde(default = "default_feed_filename")]
+    pub feed_filename: String, // required by some themes
 
     #[serde(flatten)]
     pub extra: HashMap<String, toml::Value>,
