@@ -5,9 +5,10 @@ use secp256k1::{schnorr, Secp256k1, VerifyOnly, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
+use std::collections::VecDeque;
 use std::{
     collections::HashMap,
-    fs,
+    fmt, fs,
     fs::File,
     io::Write,
     path::Path,
@@ -18,24 +19,24 @@ use tide::log;
 
 pub struct InvalidEventError;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Event {
     pub id: String,
     pub pubkey: String,
     pub created_at: i64,
-    pub kind: i64,
+    pub kind: u64,
     pub tags: Vec<Vec<String>>,
     pub content: String,
     pub sig: String,
 }
 
-pub const EVENT_KIND_NOTE: i64 = 1;
-pub const EVENT_KIND_DELETE: i64 = 5;
-pub const EVENT_KIND_BLOSSOM: i64 = 24242;
-pub const EVENT_KIND_AUTH: i64 = 27235;
-pub const EVENT_KIND_LONG_FORM: i64 = 30023;
-pub const EVENT_KIND_LONG_FORM_DRAFT: i64 = 30024;
-pub const EVENT_KIND_CUSTOM_DATA: i64 = 30078;
+pub const EVENT_KIND_NOTE: u64 = 1;
+pub const EVENT_KIND_DELETE: u64 = 5;
+pub const EVENT_KIND_BLOSSOM: u64 = 24242;
+pub const EVENT_KIND_AUTH: u64 = 27235;
+pub const EVENT_KIND_LONG_FORM: u64 = 30023;
+pub const EVENT_KIND_LONG_FORM_DRAFT: u64 = 30024;
+pub const EVENT_KIND_CUSTOM_DATA: u64 = 30078;
 
 lazy_static! {
     pub static ref SECP: Secp256k1<VerifyOnly> = Secp256k1::verification_only();
@@ -267,44 +268,170 @@ pub fn parse_event(front_matter: &HashMap<String, YamlValue>, content: &str) -> 
         id: front_matter.get("id")?.as_str()?.to_owned(),
         pubkey: front_matter.get("pubkey")?.as_str()?.to_owned(),
         created_at: front_matter.get("created_at")?.as_i64()?,
-        kind: front_matter.get("kind")?.as_i64()?,
+        kind: front_matter.get("kind")?.as_u64()?,
         tags: get_metadata_tags(front_matter)?,
         sig: front_matter.get("sig")?.as_str()?.to_owned(),
         content: content.trim_end_matches('\n').to_owned(),
     })
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Filter {
+    pub authors: Option<Vec<String>>,
+    pub kinds: Option<Vec<u64>>,
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+    pub limit: Option<usize>,
+
     #[serde(flatten)]
     pub extra: HashMap<String, JsonValue>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct EventCmd {
-    pub cmd: String,
-    pub event: Event,
+impl Filter {
+    pub fn matches_author(&self, author: &str) -> bool {
+        if let Some(authors) = &self.authors {
+            authors
+                .iter()
+                .map(|a| author.starts_with(a))
+                .fold(false, |acc, value| if acc { acc } else { value })
+        } else {
+            true
+        }
+    }
+
+    pub fn matches_kind(&self, kind: &u64) -> bool {
+        if let Some(kinds) = &self.kinds {
+            kinds.contains(&kind)
+        } else {
+            true
+        }
+    }
+
+    pub fn matches_time(&self, ts: &i64) -> bool {
+        let matches_since = if let Some(since) = self.since {
+            ts >= &since
+        } else {
+            true
+        };
+        let matches_until = if let Some(until) = self.until {
+            ts < &until
+        } else {
+            true
+        };
+
+        matches_since && matches_until
+    }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ReqCmd {
-    pub cmd: String,
-    pub subscription_id: String,
-    pub filter: Filter,
+impl fmt::Display for Filter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(authors) = &self.authors {
+            write!(f, " authors: {}", authors.join(","))?;
+        }
+        if let Some(kinds) = &self.kinds {
+            write!(
+                f,
+                " kinds: {}",
+                kinds
+                    .iter()
+                    .map(|k| format!("{}", k))
+                    .collect::<Vec<String>>()
+                    .join(",")
+            )?;
+        }
+
+        Ok(())
+    }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct CloseCmd {
-    pub cmd: String,
-    pub subscription_id: String,
+#[derive(PartialEq, Clone, Copy, Debug, Deserialize, Serialize)]
+pub enum MessageType {
+    EVENT,
+    REQ,
+    CLOSE,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(PartialEq, Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ProtocolData {
+    Type(MessageType),
+    SubId(String),
+    Event(Event),
+    Filter(Filter),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Message {
-    Event(EventCmd),
-    Req(ReqCmd),
-    Close(CloseCmd),
+    Event {
+        event: Event,
+    },
+    Req {
+        sub_id: String,
+        filters: Vec<Filter>,
+    },
+    Close {
+        sub_id: String,
+    },
+}
+
+impl Message {
+    pub fn from_str(s: &str) -> Result<Message, &'static str> {
+        let mut data: VecDeque<ProtocolData> = serde_json::from_str(&s).unwrap();
+        match data.pop_front().unwrap() {
+            ProtocolData::Type(msg_type) => {
+                if let Some(msg) = match msg_type {
+                    MessageType::EVENT => Message::from_event(data),
+                    MessageType::REQ => Message::from_req(data),
+                    MessageType::CLOSE => Message::from_close(data),
+                } {
+                    Ok(msg)
+                } else {
+                    Err("Error decoding message.")
+                }
+            }
+            _ => Err("Message must start with one of: \"EVENT\", \"REQ\", \"CLOSE\"."),
+        }
+    }
+
+    fn from_event(mut data: VecDeque<ProtocolData>) -> Option<Message> {
+        if let ProtocolData::Event(event) = data.pop_front().unwrap() {
+            Some(Message::Event { event })
+        } else {
+            None
+        }
+    }
+
+    fn from_req(mut data: VecDeque<ProtocolData>) -> Option<Message> {
+        let sub_id: String = if let ProtocolData::SubId(sub_id) = data.pop_front().unwrap() {
+            Some(sub_id)
+        } else {
+            None
+        }?;
+
+        let filters: Vec<Filter> = data
+            .into_iter()
+            .fold(Some(vec![]), |acc, entry| match acc {
+                None => None,
+                Some(mut acc) => match entry {
+                    ProtocolData::Filter(filter) => {
+                        acc.push(filter);
+                        Some(acc)
+                    }
+                    _ => None,
+                },
+            })?;
+
+        Some(Message::Req { sub_id, filters })
+    }
+
+    fn from_close(mut data: VecDeque<ProtocolData>) -> Option<Message> {
+        if let ProtocolData::SubId(sub_id) = data.pop_front().unwrap() {
+            Some(Message::Close { sub_id })
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -339,5 +466,46 @@ mod tests {
         let no_event = parse_event(&serde_yaml::from_str(&front_matter).unwrap(), content);
 
         assert!(no_event.is_none());
+    }
+
+    #[test]
+    fn test_parse_req() {
+        let s = "[\"REQ\",\"subid\",{\"authors\":[\"a\"],\"kinds\":[0],\"limit\":1},{\"authors\":[\"b\"],\"kinds\":[3],\"limit\":2}]";
+        let message = Message::from_str(&s).unwrap();
+
+        if let Message::Req { sub_id, filters } = message {
+            assert_eq!(sub_id, "subid");
+            assert_eq!(filters.len(), 2);
+
+            assert!(filters[0]
+                .authors
+                .as_ref()
+                .unwrap()
+                .contains(&"a".to_string()));
+            assert!(!filters[0]
+                .authors
+                .as_ref()
+                .unwrap()
+                .contains(&"b".to_string()));
+            assert!(filters[0].kinds.as_ref().unwrap().contains(&0));
+            assert!(!filters[0].kinds.as_ref().unwrap().contains(&3));
+            assert_eq!(filters[0].limit, Some(1));
+
+            assert!(filters[1]
+                .authors
+                .as_ref()
+                .unwrap()
+                .contains(&"b".to_string()));
+            assert!(!filters[1]
+                .authors
+                .as_ref()
+                .unwrap()
+                .contains(&"a".to_string()));
+            assert!(filters[1].kinds.as_ref().unwrap().contains(&3));
+            assert!(!filters[1].kinds.as_ref().unwrap().contains(&0));
+            assert_eq!(filters[1].limit, Some(2));
+        } else {
+            assert!(false);
+        }
     }
 }

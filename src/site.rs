@@ -137,6 +137,7 @@ impl Site {
                 println!("Event: id={}.", &event.id);
                 let event_ref = EventRef {
                     id: event.id.to_owned(),
+                    created_at: event.created_at,
                     kind: event.kind,
                     d_tag: event.get_d_tag(),
                     filename,
@@ -247,7 +248,7 @@ impl Site {
 
     fn get_path(
         &self,
-        event_kind: i64,
+        event_kind: u64,
         resource_kind: &Option<ResourceKind>,
         event_id: &str,
         event_d_tag: Option<String>,
@@ -281,6 +282,7 @@ impl Site {
         event.write(&filename).unwrap();
         let event_ref = EventRef {
             id: event.id.to_owned(),
+            created_at: event.created_at,
             kind: event.kind,
             d_tag: event_d_tag.to_owned(),
             filename,
@@ -326,7 +328,7 @@ impl Site {
 
     pub fn remove_content(&self, deletion_event: &nostr::Event) -> bool {
         let mut deleted_event_id: Option<String> = None;
-        let mut deleted_event_kind: Option<i64> = None;
+        let mut deleted_event_kind: Option<u64> = None;
         let mut deleted_event_d_tag: Option<String> = None;
         for tag in &deletion_event.tags {
             if tag[0] == "e" {
@@ -341,7 +343,7 @@ impl Site {
                         // TODO: do we need to check the site owner here?
                         return false;
                     }
-                    deleted_event_kind = Some(parts[0].parse::<i64>().unwrap());
+                    deleted_event_kind = Some(parts[0].parse::<u64>().unwrap());
                     deleted_event_d_tag = Some(parts[2].to_owned());
                     log::debug!("DELETE 'a' {}", deleted_event_ref);
                 }
@@ -431,7 +433,8 @@ impl Site {
 #[derive(Clone, Serialize)]
 pub struct EventRef {
     pub id: String,
-    pub kind: i64,
+    pub created_at: i64,
+    pub kind: u64,
     pub d_tag: Option<String>,
 
     pub filename: String,
