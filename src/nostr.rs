@@ -1,4 +1,4 @@
-use bitcoin_hashes::{sha256, Hash};
+use bitcoin_hashes::sha256;
 use chrono::{DateTime, NaiveDateTime, TimeDelta, TimeZone, Utc};
 use lazy_static::lazy_static;
 use secp256k1::{schnorr, Secp256k1, VerifyOnly, XOnlyPublicKey};

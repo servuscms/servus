@@ -10,21 +10,23 @@ use walkdir::{DirEntry, WalkDir};
 
 // https://github.com/getzola/zola/blob/master/components/site/src/sass.rs
 
-pub fn compile_sass(sass_path: &PathBuf) -> HashMap<String, String> {
+pub fn compile_sass(sass_path: &PathBuf) -> Result<HashMap<String, String>, String> {
     let mut resources = HashMap::new();
 
     let options = Options::default().style(OutputStyle::Compressed);
     let files = get_non_partial_scss(&sass_path);
 
     for file in files {
-        let css = compile_file(&file, &options).unwrap();
-
-        let path = file.strip_prefix(&sass_path).unwrap().with_extension("css");
-
-        resources.insert(format!("/{}", path.display().to_string()), css);
+        match compile_file(&file, &options) {
+            Ok(css) => {
+                let path = file.strip_prefix(&sass_path).unwrap().with_extension("css");
+                resources.insert(format!("/{}", path.display().to_string()), css);
+            }
+            _ => return Err(format!("Error compiling file: {}", file.display())),
+        }
     }
 
-    resources
+    Ok(resources)
 }
 
 fn is_partial_scss(entry: &DirEntry) -> bool {
