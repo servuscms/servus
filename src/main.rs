@@ -3,6 +3,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use clap::Parser;
 use futures_util::stream::once;
+use git2::Repository;
 use http_types::{mime, Method};
 use multer::Multipart;
 use phf::{phf_map, phf_set};
@@ -38,6 +39,8 @@ mod utils;
 use resource::{ContentSource, Resource, ResourceKind};
 use site::Site;
 use theme::Theme;
+
+const THEMES_REPO: &str = "https://github.com/servus-social/themes";
 
 #[derive(Parser)]
 struct Cli {
@@ -366,7 +369,7 @@ async fn handle_request(request: Request<State>) -> tide::Result<Response> {
         }
 
         let themes = request.state().themes.read().unwrap();
-        let theme = themes.get(&site.config.theme.clone().unwrap()).unwrap();
+        let theme = themes.get(&site.config.theme).unwrap();
 
         let mut resource_path = format!("/{}", &path);
         if site_resources.contains(&resource_path) {
@@ -553,10 +556,7 @@ async fn handle_get_site_config(request: Request<State>) -> tide::Result<Respons
 
     Ok(Response::builder(StatusCode::Ok)
         .content_type(mime::JSON)
-        .body(
-            json!({"theme": site.config.theme.unwrap_or("".to_string()), "available_themes": themes})
-                .to_string(),
-        )
+        .body(json!({"theme": site.config.theme, "available_themes": themes}).to_string())
         .build())
 }
 
@@ -578,13 +578,11 @@ async fn handle_put_site_config(mut request: Request<State>) -> tide::Result<Res
     // which is already merged with the theme's config!
     let config_path = format!("{}/{}/_config.toml", site::SITE_PATH, site.domain);
     let mut config = site::load_config(&config_path).unwrap();
-    config.theme = Some(
-        request
-            .body_json::<PutSiteConfigRequestBody>()
-            .await
-            .unwrap()
-            .theme,
-    );
+    config.theme = request
+        .body_json::<PutSiteConfigRequestBody>()
+        .await
+        .unwrap()
+        .theme;
     site::save_config(&config_path, config);
 
     let new_site = site::load_site(&site.domain);
@@ -872,11 +870,48 @@ async fn main() -> Result<(), std::io::Error> {
 
     femme::with_level(log::LevelFilter::Info);
 
-    let themes = theme::load_themes();
+    let mut themes = theme::load_themes();
 
     if themes.len() == 0 {
-        println!("No themes found. Exiting!");
-        return Ok(());
+        log::error!("No themes found!");
+
+        let stdin = io::stdin();
+        let mut response = String::new();
+        while response != "n" && response != "y" {
+            print!("Fetch themes from {}? [y/n]? ", THEMES_REPO);
+            io::stdout().flush().unwrap();
+            response = stdin.lock().lines().next().unwrap().unwrap().to_lowercase();
+        }
+
+        if response == "y" {
+            let url = format!("{}.git", THEMES_REPO);
+            match Repository::clone(&url, "./themes") {
+                Ok(repo) => {
+                    for mut submodule in repo.submodules().unwrap() {
+                        log::info!(
+                            "Cloning theme: {}...",
+                            submodule.path().as_os_str().to_str().unwrap()
+                        );
+                        if let Err(e) = submodule.update(true, None) {
+                            log::warn!(
+                                "Failed to clone theme {}: {}",
+                                submodule.path().as_os_str().to_str().unwrap(),
+                                e
+                            );
+                        };
+                    }
+                }
+                Err(e) => panic!("Failed to clone themes repo: {}", e),
+            };
+        } else {
+            return Ok(());
+        }
+
+        themes = theme::load_themes();
+
+        if themes.len() == 0 {
+            panic!("No themes!");
+        }
     }
 
     let sites;

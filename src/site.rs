@@ -18,7 +18,8 @@ pub const SITE_PATH: &str = "./sites";
 use crate::{
     content, nostr,
     resource::{ContentSource, Resource, ResourceKind},
-    template,
+    template, theme,
+    theme::ThemeConfig,
     utils::merge,
 };
 
@@ -46,7 +47,7 @@ pub struct SiteConfig {
     pub base_url: String,
     pub pubkey: Option<String>,
 
-    pub theme: Option<String>,
+    pub theme: String,
     pub title: Option<String>,
 
     #[serde(default = "default_feed_filename")]
@@ -82,7 +83,7 @@ impl SiteConfig {
         }
     }
 
-    pub fn merge(&mut self, other: &SiteConfig) {
+    pub fn merge(&mut self, other: &ThemeConfig) {
         for (key, value) in &other.extra {
             if !self.extra.contains_key(key) {
                 self.extra.insert(key.to_owned(), value.clone());
@@ -96,7 +97,7 @@ impl SiteConfig {
 fn load_templates(site_config: &SiteConfig) -> tera::Tera {
     println!("Loading templates...");
 
-    let theme_path = format!("./themes/{}", site_config.theme.as_ref().unwrap());
+    let theme_path = format!("./themes/{}", site_config.theme);
 
     let mut tera = tera::Tera::new(&format!("{}/templates/**/*", theme_path)).unwrap();
     tera.autoescape_on(vec![]);
@@ -470,8 +471,8 @@ pub fn load_site(domain: &str) -> Site {
 
     let mut config = config.unwrap();
 
-    let theme_path = format!("./themes/{}", config.theme.as_ref().unwrap());
-    let theme_config = load_config(&format!("{}/config.toml", theme_path)).unwrap();
+    let theme_path = format!("./themes/{}", config.theme);
+    let theme_config = theme::load_config(&format!("{}/config.toml", theme_path)).unwrap();
 
     config.merge(&theme_config);
 
@@ -534,8 +535,8 @@ pub fn create_site(domain: &str, admin_pubkey: Option<String>) -> Site {
 
     let mut config = load_config(&format!("{}/_config.toml", path)).unwrap();
 
-    let theme_path = format!("./themes/{}", config.theme.as_ref().unwrap());
-    let theme_config = load_config(&format!("{}/config.toml", theme_path)).unwrap();
+    let theme_path = format!("./themes/{}", config.theme);
+    let theme_config = theme::load_config(&format!("{}/config.toml", theme_path)).unwrap();
 
     config.merge(&theme_config);
 
