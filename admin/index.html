@@ -5,12 +5,15 @@
         <script src="https://unpkg.com/alpinejs" defer></script>
         <script>
             const API_BASE_URL = "%%API_BASE_URL%%";
-            const WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const hexes = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
 
-            const EVENT_KIND_NOTE = 1;
-            const EVENT_KIND_DELETION = 5;
-            const EVENT_KIND_LONG_FORM = 30023;
-            const EVENT_KIND_LONG_FORM_DRAFT = 30024;
+            function bytesToHex(bytes) {
+                let hex = '';
+                for (let i = 0; i < bytes.length; i++) {
+                    hex += hexes[bytes[i]];
+                }
+                return hex;
+            }
 
             async function getEvent(kind, content, tags) {
                 let event = {'kind': kind, 'content': content, 'tags': tags};
@@ -23,16 +26,6 @@
 
             async function getNostrAuthHeader(url, method) {
                 let authEvent = await getEvent(27235, "", [['u', url], ['method', method]]);
-                return `Nostr ${btoa(JSON.stringify(authEvent))}`;
-            }
-
-            async function getBlossomAuthHeader(method, sha256) {
-                let expiration = new Date();
-                expiration.setDate(expiration.getDate() + 10); // 10 days from now
-                expiration = Math.trunc(expiration.valueOf() / 1000);
-                let content = `${method.charAt(0).toUpperCase()}${method.slice(1)} file`; // "Upload file" / "Delete file"
-                let tags = [['t', method], ['expiration', expiration.toString()], ['x', sha256]];
-                let authEvent = await getEvent(24242, content, tags);
                 return `Nostr ${btoa(JSON.stringify(authEvent))}`;
             }
 
@@ -65,15 +58,7 @@
                 });
             }
 
-            function getWebSocketUrl(siteDomain) {
-                if (API_BASE_URL.startsWith("//localhost:")) {
-                    return `ws:${API_BASE_URL}`;
-                } else {
-                    return `${WS_PROTOCOL}//${siteDomain}`;
-                }
-            }
-
-            function getApiBaseUrl(siteDomain) {
+            function getSiteApiBaseUrl(siteDomain) {
                 if (API_BASE_URL.startsWith("//localhost:")) {
                     return `http:${API_BASE_URL}`;
                 } else {
@@ -81,167 +66,10 @@
                 }
             }
 
-            function getPosts(sites, posts) {
-                posts.length = 0;
-                for (let site of sites) {
-                    let ws = new WebSocket(getWebSocketUrl(site.domain));
-                    ws.onmessage = (e) => {
-                        let r = JSON.parse(e.data);
-                        if (r[0] === 'EVENT') {
-                            let post = {'event_id': r[2].id, 'content': r[2].content, 'site': site, 'persisted': true, 'kind': r[2].kind};
-                            for (let i = 0; i < r[2].tags.length; i++) {
-                                let tag = r[2].tags[i];
-                                if (tag[0] === 'title') {
-                                    post.title = tag[1];
-                                } else if (tag[0] === 'd') {
-                                    post.d_tag = tag[1];
-                                } else if (tag[0] === 'published_at') {
-                                    post.published_at = tag[1];
-                                }
-                            }
-                            posts.push(post);
-                        }
-                    };
-                    ws.onopen = (e) => {
-                        ws.send(JSON.stringify(['REQ', (Math.random() + 1).toString(36).substring(2), {'kinds': [EVENT_KIND_LONG_FORM, EVENT_KIND_LONG_FORM_DRAFT]}]));
-                    };
-                }
-            }
-
-            const hexes = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
-
-            function bytesToHex(bytes) {
-                let hex = '';
-                for (let i = 0; i < bytes.length; i++) {
-                    hex += hexes[bytes[i]];
-                }
-                return hex;
-            }
-
-            function savePost(post, kind, published_at, onOK) {
-                let ws = new WebSocket(getWebSocketUrl(post.site.domain));
-                ws.onmessage = (e) => {
-                    let r = JSON.parse(e.data);
-                    if (r[0] === 'OK') {
-                        onOK();
-                    }
-                };
-                ws.onopen = async (e) => {
-                    if (post.d_tag === undefined) {
-                        post.d_tag = post.title.toLowerCase().replace(/ /g, "-").replace(/[^\w-]+/g, "");
-                    }
-                    let tags = [['d', post.d_tag], ['title', post.title]];
-                    if (published_at !== undefined) {
-                        tags.push(['published_at', published_at]);
-                    }
-                    ws.send(JSON.stringify(['EVENT', await getEvent(kind, post.content, tags)]));
-                    post.persisted = true;
-                };
-            }
-
-            function deleteEvent(domain, deletionTag, onOK) {
-               let ws = new WebSocket(getWebSocketUrl(domain));
-               ws.onmessage = (e) => {
-                    let r = JSON.parse(e.data);
-                    if (r[0] === 'OK') {
-                        onOK();
-                    }
-               };
-               ws.onopen = async (e) => {
-                   ws.send(JSON.stringify(['EVENT', await getEvent(EVENT_KIND_DELETION, "", [deletionTag])]));
-               };
-            }
-
-            function getNotes(site, notes) {
-                notes.length = 0;
-
-                let ws = new WebSocket(getWebSocketUrl(site.domain));
-                ws.onmessage = (e) => {
-                    let r = JSON.parse(e.data);
-                    if (r[0] === 'EVENT') {
-                        let note = {'event_id': r[2].id, 'content': r[2].content, 'site': site};
-                        notes.push(note);
-                    }
-                }
-
-                ws.onopen = (e) => {
-                    ws.send(JSON.stringify(['REQ', (Math.random() + 1).toString(36).substring(2), {'kinds': [EVENT_KIND_NOTE]}]));
-                };
-            }
-
-            async function getFiles(site, files) {
-                files.length = 0;
-
-                const res = await fetch(new URL(`${getApiBaseUrl(site.domain)}/list/${await window.nostr.getPublicKey()}`));
-                for (f of await res.json()) {
-                    files.push(f);
-                }
-            }
-
-            function saveNote(note, onOK) {
-                let ws = new WebSocket(getWebSocketUrl(note.site.domain));
-                ws.onmessage = (e) => {
-                    let r = JSON.parse(e.data);
-                    if (r[0] === 'OK') {
-                        onOK();
-                    }
-                };
-                ws.onopen = async (e) => {
-                    ws.send(JSON.stringify(['EVENT', await getEvent(EVENT_KIND_NOTE, note.content, [])]));
-                };
-            }
-
-            async function uploadFileNip96(site, onSuccess) {
-                const endpoint = `${getApiBaseUrl(site.domain)}/api/files`;
-                const request = new XMLHttpRequest();
-                const formData = new FormData();
-                request.open("POST", endpoint, true);
-                request.setRequestHeader('Authorization', await getNostrAuthHeader(endpoint, 'POST'));
-                request.onreadystatechange = () => {
-                    if (request.readyState === 4 && request.status === 201) {
-                        onSuccess();
-                    }
-                };
-                let fileInput = document.querySelector('#fileInput');
-                formData.append('file', fileInput.files[0]);
-                request.send(formData);
-            }
-
-            async function deleteFileNIP96(site, sha256) {
-                let endpoint = `${getApiBaseUrl(site.domain)}/api/files/${sha256}`;
-                await fetch(new URL(endpoint),
-                    {
-                        method: 'DELETE',
-                        headers: { authorization: await getNostrAuthHeader(endpoint, 'DELETE') }
-                    });
-            }
-
-            async function uploadFileBlossom(site) {
-                const endpoint = `${getApiBaseUrl(site.domain)}/upload`;
-                let fileInput = document.querySelector('#fileInput');
-                let sha256 = bytesToHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", await fileInput.files[0].arrayBuffer())));
-                const res = await fetch(new URL(endpoint), {
-                    method: "PUT",
-                    body: fileInput.files[0],
-                    headers: { authorization: await getBlossomAuthHeader('upload', sha256) },
-                });
-                return (await res.json());
-            }
-
-            async function deleteFileBlossom(site, sha256) {
-                let endpoint = `${getApiBaseUrl(site.domain)}/${sha256}`;
-                await fetch(new URL(endpoint),
-                    {
-                        method: 'DELETE',
-                        headers: { authorization: await getBlossomAuthHeader('delete', sha256) }
-                    }
-                );
-            }
-
             async function getConfig(site, themes) {
                 themes.length = 0;
 
-                let endpoint = `${getApiBaseUrl(site.domain)}/api/config`;
+                let endpoint = `${getSiteApiBaseUrl(site.domain)}/api/config`;
                 const res = await fetch(new URL(endpoint), {
                         headers: { authorization: await getNostrAuthHeader(endpoint, 'GET') }
                 });
@@ -252,7 +80,7 @@
             }
 
             async function saveConfig(site, theme) {
-                let endpoint = `${getApiBaseUrl(site.domain)}/api/config`;
+                let endpoint = `${getSiteApiBaseUrl(site.domain)}/api/config`;
                 let response = await fetch(endpoint, {
                     method: 'PUT',
                     headers: {
@@ -273,7 +101,7 @@
         </script>
     </head>
     <body>
-        <div class="w-full mx-auto" x-data="{site: null, post: null, note: null, noteManager: false, fileManager: false, postManager: false, pageManager: false, configManager: false, sites: [], posts: [], notes: [], files: [], themes: []}" x-init="await getSites(sites); site = sites[0];">
+        <div class="w-full mx-auto" x-data="{site: null, sites: [], themes: []}" x-init="await getSites(sites); site = sites[0]; await getConfig(site, themes);">
             <div class="navbar bg-base-200">
                 <div class="flex-1">
                     <a class="btn btn-ghost text-xl">Servus!</a>
@@ -316,156 +144,18 @@
                     <div>
                         <h1 class="text-2xl text-center" x-text="site.domain"></h1>
                         <div class="flex justify-center items-center mt-12">
-                            <template x-if="!noteManager && !fileManager && !pageManager && !postManager && !configManager">
-                                <div>
-                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; noteManager = true; getNotes(site, notes); note = {'content': '', 'site': site}">Notes</a>
-                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; fileManager = true; await getFiles(site, files);">Files</a>
-                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; pageManager = true; await getPosts(sites, posts);">Pages</a>
-                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; postManager = true; await getPosts(sites, posts);">Posts</a>
-                                    <a class="btn btn-lg btn-primary" x-on:click="post = null; configManager = true; await getConfig(site, themes);">Config</a>
+                            <div>
+                                <div class="w-full mt-24">
+                                    <select id="selectTheme">
+                                        <template x-for="t in themes">
+                                            <option x-bind:value="t.theme" x-text="t.theme" x-bind:selected="t.selected"></option>
+                                        </template>
+                                    </select>
                                 </div>
-                            </template>
-                            <template x-if="noteManager">
-                                <div>
-                                    <a class="btn btn-lg btn-primary btn-outline" x-on:click="noteManager = false">Back</a>
-                                    <template x-for="n in notes">
-                                        <div class="card bg-base-300 w-96 m-2 shadow-xl">
-                                            <div class="card-body">
-                                                <p x-text="n.content"></p>
-                                                <div class="card-actions justify-end">
-                                                    <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { deleteEvent(n.site.domain, ['e', n.event_id], () => getNotes(site, notes)); }">Delete</button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </template>
-                                    <div>
-                                        <div class="form-control mt-2">
-                                            <label class="label" for="content">
-                                                <span class="label-text">Content</span>
-                                            </label>
-                                            <textarea x-model="note.content" rows="6" class="textarea textarea-bordered h-48"></textarea>
-                                        </div>
-                                        <div class="w-full flex justify-center items-center mt-2">
-                                            <div class="w-full flex justify-center items-center gap-2">
-                                                <div class="w-1/2 flex flex-row gap-2">
-                                                    <button x-on:click="saveNote(note, () => { getNotes(site, notes); note = {'site': site, 'content': ''}; });" class="btn btn-primary mt-1">Save</button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
+                                <div class="w-full mt-24">
+                                    <button x-on:click="await saveConfig(site, document.getElementById('selectTheme').value);" class="btn btn-primary mt-1">Save</button>
                                 </div>
-                            </template> <!-- noteManager -->
-                            <template x-if="fileManager">
-                                <div>
-                                    <a class="btn btn-lg btn-primary btn-outline" x-on:click="fileManager = false">Back</a>
-                                    <template x-for="f in files">
-                                        <div class="card bg-base-300 w-96 m-2 shadow-xl">
-                                            <figure>
-                                                <img x-bind:src="`https://${site.domain}/${f.sha256}`" x-bind:alt="f.sha256" />
-                                            </figure>
-                                            <div class="card-body">
-                                                <p x-text="`${Math.floor(f.size / 1024)} kb`"></p>
-                                                <div class="card-actions justify-end">
-                                                    <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { await deleteFileBlossom(site, f.sha256); getFiles(site, files); }">Delete (Blossom)</button>
-                                                    <button class="btn btn-error" x-on:click="if (confirm('Are you sure?')) { await deleteFileNIP96(site, f.sha256); getFiles(site, files); }">Delete (NIP-96)</button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </template>
-                                    <div>
-                                        <input type="file" id="fileInput" />
-                                        <button x-on:click="await uploadFileBlossom(site); await getFiles(site, files);" class="btn btn-primary">Upload (Blossom)</button>
-                                        <button x-on:click="await uploadFileNip96(site, () => { getFiles(site, files); });" class="btn btn-primary">Upload (NIP-96)</button>
-                                    </div>
-                                </div>
-                            </template> <!-- fileManager -->
-                            <template x-if="postManager || pageManager">
-                                <div>
-                                    <template x-if="post">
-                                        <div class="w-full mt-24">
-                                            <div class="form-control w-full max-w-full">
-                                                <label class="label" for="title">
-                                                    <span class="label-text">Title</span>
-                                                </label>
-                                                <input x-model="post.title" type="text" name="title" class="input input-bordered" />
-                                            </div>
-                                            <div class="form-control mt-2">
-                                                <label class="label" for="url">
-                                                    <span class="label-text">URL</span>
-                                                </label>
-                                                <div>
-                                                    <span x-text="post ? 'http://' + post.site.domain + '/' : ''"></span>
-                                                    <input x-model="post.d_tag" type="text" name="slug" class="input input-bordered" :disabled="post.persisted" />
-                                                </div>
-                                            </div>
-                                            <div class="form-control mt-2">
-                                                <label class="label" for="content">
-                                                    <span class="label-text">Content</span>
-                                                </label>
-                                                <textarea x-model="post.content" rows="6" class="textarea textarea-bordered h-48"></textarea>
-                                            </div>
-                                            <div class="w-full flex justify-center items-center mt-2">
-                                                <div class="w-full flex justify-center items-center gap-2">
-                                                    <template x-if="postManager">
-                                                        <div class="w-1/2 flex flex-row gap-2">
-                                                            <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM, Math.floor(Date.now() / 1000).toString(), async () => { post = null; await getPosts(sites, posts); });" class="btn btn-primary mt-1">Save</button>
-                                                            <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM_DRAFT, Math.floor(Date.now() / 1000).toString(), async () => { post = null; await getPosts(sites, posts); });" class="btn btn-primary mt-1">Save draft</button>
-                                                            <button x-on:click="post = null; await getPosts(sites, posts);" class="btn mt-1">Cancel</button>
-                                                        </div>
-                                                    </template>
-                                                    <template x-if="pageManager">
-                                                        <div class="w-1/2 flex flex-row gap-2">
-                                                            <button x-on:click="savePost(post, EVENT_KIND_LONG_FORM, undefined, async () => { post = null; await getPosts(sites, posts); });" class="btn btn-primary mt-1">Save page</button>
-                                                            <button x-on:click="post = null; await getPosts(sites, posts);" class="btn mt-1">Cancel</button>
-                                                        </div>
-                                                    </template>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </template> <!-- post -->
-                                    <template x-if="!post">
-                                        <div>
-                                            <a class="btn btn-lg btn-primary btn-outline" x-on:click="postManager = false; pageManager = false;">Back</a>
-                                            <template x-for="p in posts">
-                                                <template x-if="site && p.site.domain === site.domain">
-                                                    <template x-if="(postManager && p.published_at !== undefined) || (pageManager && p.published_at === undefined)">
-                                                        <div class="card bg-base-300 w-96 m-2 shadow-xl">
-                                                            <div class="card-body">
-                                                                <h2 class="card-title" x-text="p.title"></h2>
-                                                                <template x-if="p.kind === EVENT_KIND_LONG_FORM_DRAFT">
-                                                                    <div class="badge badge-primary badge-outline">Draft</div>
-                                                                </template>
-                                                                <div class="card-actions justify-end">
-                                                                    <button class="btn" x-on:click="post = p">Edit</button>
-                                                                    <template x-if="p.d_tag !== undefined && p.persisted">
-                                                                        <button x-on:click="if (confirm('Are you sure?')) { deleteEvent(p.site.domain, ['a', `${p.kind}:${await window.nostr.getPublicKey()}:${p.d_tag}`], async () => await getPosts(sites, posts)); }" class="btn btn-error mt-1">Delete</button>
-                                                                    </template>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </template>
-                                                </template>
-                                            </template>
-                                            <a class="btn btn-lg btn-primary" x-on:click="post = {'id': undefined, 'title': postManager ? 'New post' : 'New page', 'content': 'New content', 'site': site, 'persisted': false}; posts = posts.concat(post);">New</a>
-                                        </div>
-                                    </template> <!-- !post -->
-                                </div>
-                            </template> <!-- postManager / pageManager -->
-                            <template x-if="configManager">
-                                <div>
-                                    <a class="btn btn-lg btn-primary btn-outline" x-on:click="configManager = false">Back</a>
-                                    <div class="w-full mt-24">
-                                        <select id="selectTheme">
-                                            <template x-for="t in themes">
-                                                <option x-bind:value="t.theme" x-text="t.theme" x-bind:selected="t.selected"></option>
-                                            </template>
-                                        </select>
-                                    </div>
-                                    <div class="w-full mt-24">
-                                        <button x-on:click="await saveConfig(site, document.getElementById('selectTheme').value);" class="btn btn-primary mt-1">Save</button>
-                                    </div>
-                                </div>
-                            </template> <!-- configManager -->
+                            </div>
                         </div>
                     </div>
                 </template> <!-- /site -->

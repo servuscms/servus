@@ -24,7 +24,7 @@ Unlike Jekyll:
  * no dependencies on Ruby Gems, Docker, etc.
 
 Like WordPress:
- * admin interface
+ * easy administration
 
 Unlike WordPress:
  * no need to have a database like MySQL
@@ -45,7 +45,6 @@ If you already have a Nostr keypair, you already own your identity. But you only
 * All content and settings stored as **plain text**. Except, of course, images or other media you have as content. Not in a SQL database, not in "the cloud", not in "some Nostr relays"... but in plain text files on the machine running Servus.
 * As a corolary of the above, a *full backup* is just an `rsync` command... or a `.zip` file. Download a copy of it to your laptop, write a script that imports it to another CMS, search it, copy-paste parts of it to other places...
 * All content served to the readers is **plain HTML served over HTTP(S)**. No Javascript that generates UI elements on the client side, no Javascript that queries Nostr relays or uses background HTTP requests to get content from the server. What you get is a plain "website" that you can open in any web browser or even using `wget`.
-* The **admin interface** however is a Javascript client-side app, because signing of Nostr events has to be done by your web browser. You don't want your Nostr private key sitting around on some VPS.
 * **Support for "themes"**. *Simple* doesn't mean ugly nor does it mean it should be limited in any way. Avoiding unnecessary client-side technologies doesn't mean the websites built using Servus need to look "old school" or be limited in functionality. In fact, themes *can* use Javascript *if they want to* - for certain effects, etc. The goal is to not *require* Javascript as part of the overall architecture, not to avoid it at any cost.
 * **Multiple websites** that can be separately administered in one instance. So you will be able to, for example, self-host your personal website, your business's website and have your uncle host his blog, all with a single Servus instance.
 
@@ -74,10 +73,6 @@ You also need a VPS with SSH access where you would run **Servus** unless you ar
 
 **Also keep in mind that everything changes all the time without prior notice!** So using it for a production website is very risky. For now...
 
-### UI
-
-It is worth mentioning, before you go any further with false expectations, that **Servus** has a very basic admin interface which is not only lacking features but also still buggy. Don't rely on it... yet!
-
 ### Beginners
 
 Does the above sound complicated to you?
@@ -86,11 +81,11 @@ Does the above sound complicated to you?
 
 Things are definitely going to improve, but for now I am too busy building a solid foundation in order to consider beginners. Sorry.
 
-## Themes
+### Themes
 
 **Servus** currently supports **Zola**'s [Hyde](https://github.com/getzola/hyde/) theme. Some other Zola themes also work, some not.
 
-## Want to try it out?
+## Try it out
 
 It's very simple to get up and running!
 
@@ -195,12 +190,9 @@ The following variables are passed to the templates:
 * `config` - the values specified in `_config.toml`
 * `page.url`, `page.slug`, `page.summary`, `page.date`, ...
 
-## Posting
+## Managing your content
 
-Ways you can post to your site:
-
-1. **Post using a 3rd party Nostr client** such as [Habla](https://github.com/verbiricha/habla.news) (for long for content) or [Primal](https://primal.net) (for notes)
-2. **Post using the built-in admin interface**, which is essentially a Nostr client
+**Post to your site using any Nostr client** such as [Amethyst](https://github.com/vitorpamplona/amethyst).
 
 ## REST API
 
@@ -237,11 +229,7 @@ Servus implements [NIP-96](https://github.com/nostr-protocol/nips/blob/master/96
 
 ## Admin interface
 
-The *admin interface* requires you to have a Nostr extension such as [Alby](https://getalby.com/) or [nos2x](https://github.com/fiatjaf/nos2x) installed in your browser and lets you:
-
-1. create sites (using the Servus REST API)
-2. manage posts, pages and notes (using the Nostr protocol)
-3. manage files (using the Blossom protocol)
+The *admin interface* is rudimentary at best and lets you create sites and change a site's theme (using the Servus REST API). It requires you to have a Nostr extension such as [Alby](https://getalby.com/) or [nos2x](https://github.com/fiatjaf/nos2x) installed in your browser. You might as well not use it and just change your site's theme by editing `_config.toml` and restarting **Servus**.
 
 ## Any questions?
 
